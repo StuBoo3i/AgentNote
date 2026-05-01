@@ -60,7 +60,8 @@ module.exports = {
           children: [
             '',
             'data-agent-baseline-technical-report',
-            'task-11-run-1-quality-report'
+            'task-11-run-1-quality-report',
+            'run-2-quality-report'
           ]
         }
       ],
