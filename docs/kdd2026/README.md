@@ -4,11 +4,20 @@
 
 ## 笔记列表
 
-| 笔记 | 来源标记 | 说明 |
-| --- | --- | --- |
-| [DataAgent Baseline 技术报告](./data-agent-baseline-technical-report.md) | AI 生成 | 分析当前 baseline 的 Agent 架构、工具调用、运行链路和相关论文脉络。 |
-| [Task 11 Run 1 回答质量报告](./task-11-run-1-quality-report.md) | AI 生成 | 分析 task_11 第一次运行的预测结果、错误原因和可改进方向。 |
-| [Run 2 全量测试质量分析报告](./run-2-quality-report.md) | AI 生成 | 分析 run_2 全量测试结果、失败任务、答案不匹配类型和框架改进方向。 |
+### [DataAgent Baseline 技术报告](./data-agent-baseline-technical-report.md)
+
+- 来源：`AI 生成`
+- 简介：分析当前 baseline 的 Agent 架构、工具调用、运行链路和相关论文脉络。
+
+### [Task 11 Run 1 回答质量报告](./task-11-run-1-quality-report.md)
+
+- 来源：`AI 生成`
+- 简介：分析 task_11 第一次运行的预测结果、错误原因和可改进方向。
+
+### [Run 2 全量测试质量分析报告](./run-2-quality-report.md)
+
+- 来源：`AI 生成`
+- 简介：分析 run_2 全量测试结果、失败任务、答案不匹配类型和框架改进方向。
 
 ## 来源标记说明
 
