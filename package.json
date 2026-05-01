@@ -1,0 +1,20 @@
+{
+  "name": "agent-learning-notes",
+  "version": "1.0.0",
+  "private": true,
+  "description": "VuePress 1.x personal learning notes for AI, LLM, Agent and server cluster study.",
+  "scripts": {
+    "docs:dev": "cross-env NODE_OPTIONS=--openssl-legacy-provider vuepress dev docs --host 0.0.0.0",
+    "docs:dev:local": "cross-env NODE_OPTIONS=--openssl-legacy-provider vuepress dev docs",
+    "docs:build": "cross-env NODE_OPTIONS=--openssl-legacy-provider vuepress build docs",
+    "docs:clean": "rimraf docs/.vuepress/dist docs/.vuepress/.cache",
+    "deploy:gh": "npm run docs:build && gh-pages -d docs/.vuepress/dist"
+  },
+  "devDependencies": {
+    "cross-env": "7.0.3",
+    "gh-pages": "6.3.0",
+    "lru-cache": "5.1.1",
+    "rimraf": "5.0.10",
+    "vuepress": "1.9.10"
+  }
+}
