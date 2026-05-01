@@ -20,7 +20,7 @@ module.exports = {
       { text: '大模型笔记', link: '/large-models/' },
       { text: 'Agent笔记', link: '/agents/' },
       { text: '服务器集群笔记', link: '/servers/' },
-      { text: '部署上线', link: '/deploy/github-pages.html' }
+      { text: 'KDD2026比赛分析', link: '/kdd2026/' }
     ],
     sidebar: {
       '/large-models/': [
@@ -53,12 +53,14 @@ module.exports = {
           ]
         }
       ],
-      '/deploy/': [
+      '/kdd2026/': [
         {
-          title: '部署上线',
+          title: 'KDD2026比赛分析',
           collapsable: false,
           children: [
-            'github-pages'
+            '',
+            'data-agent-baseline-technical-report',
+            'task-11-run-1-quality-report'
           ]
         }
       ],
