@@ -1,0 +1,71 @@
+module.exports = {
+  title: 'Agent 学习笔记',
+  description: '个人 AI、大模型、Agent、服务器集群与编程学习笔记',
+  base: '/AgentNote/',
+  head: [
+    ['meta', { name: 'viewport', content: 'width=device-width,initial-scale=1' }],
+    ['meta', { name: 'keywords', content: 'Agent, LLM, AI, VuePress, 学习笔记' }]
+  ],
+  markdown: {
+    lineNumbers: true
+  },
+  themeConfig: {
+    repo: '',
+    editLinks: false,
+    lastUpdated: '最后更新',
+    smoothScroll: true,
+    sidebarDepth: 2,
+    nav: [
+      { text: '首页', link: '/' },
+      { text: '大模型笔记', link: '/large-models/' },
+      { text: 'Agent笔记', link: '/agents/' },
+      { text: '服务器集群笔记', link: '/servers/' },
+      { text: '部署上线', link: '/deploy/github-pages.html' }
+    ],
+    sidebar: {
+      '/large-models/': [
+        {
+          title: '大模型笔记',
+          collapsable: false,
+          children: [
+            '',
+            'llm-basics'
+          ]
+        }
+      ],
+      '/agents/': [
+        {
+          title: 'Agent笔记',
+          collapsable: false,
+          children: [
+            '',
+            'agent-basics'
+          ]
+        }
+      ],
+      '/servers/': [
+        {
+          title: '服务器集群笔记',
+          collapsable: false,
+          children: [
+            '',
+            'linux-basics'
+          ]
+        }
+      ],
+      '/deploy/': [
+        {
+          title: '部署上线',
+          collapsable: false,
+          children: [
+            'github-pages'
+          ]
+        }
+      ],
+      '/': [
+        '',
+        'about'
+      ]
+    }
+  }
+}
