@@ -4,9 +4,57 @@
 本文为混合整理（人 + AI）：由人工主导阅读与修订，结合 AI 进行结构化归纳和补充说明。
 :::
 
-该 Base 是一个 ReAct 风格 Data Agent baseline，重要的业务循环是 thought -> action -> observation -> answer
+## 阅读说明
 
-## cil.py
+::: warning 建议结合代码同步阅读
+建议一边看本文，一边打开项目源码对照阅读：`/nfsdat/home/jwangslm/kddcup2026-base/src/data_agent_baseline`。  
+本文重点是帮助你快速建立代码地图和执行链路，不替代源码本身。
+:::
+
+- 阅读目标：先建立全局认知，再深入关键模块（`runner`、`react`、`tools`）。
+- 预计阅读时长：
+1. 速读版（抓主流程）：`20-30 分钟`
+2. 细读版（跟函数和数据结构）：`45-70 分钟`
+- 适合对象：第一次接触 DataAgent baseline，或需要快速接手该项目的开发者。
+
+### 推荐阅读顺序
+
+1. `cli.py`：先看命令入口和运行方式。
+2. `benchmark/schema.py`、`benchmark/dataset.py`：再看任务与数据结构。
+3. `run/runner.py`：理解任务执行编排、并发与超时机制。
+4. `agents/*`：理解 ReAct 主循环和模型交互。
+5. `tools/*`：理解工具接口、终止条件与文件/SQL/Python 执行能力。
+
+### 快速导航
+
+- 命令入口：`cli.py`
+- 数据定义：`benchmark/schema.py`
+- 数据集加载：`benchmark/dataset.py`
+- 任务编排：`run/runner.py`
+- Agent 主循环：`agents/react.py`
+- 工具系统：`tools/registry.py`
+
+### 阅读打卡清单
+
+- [ ] 我已经理解整体执行链路（`CLI -> Runner -> Agent -> Tools -> Answer`）。
+- [ ] 我已经看完并理解 `run/runner.py` 的超时与并发编排逻辑。
+- [ ] 我已经看完 `agents/react.py`，知道每一步是如何记录到 `trace.json` 的。
+- [ ] 我已经看完 `tools/registry.py`，知道 `answer` 如何触发终止。
+- [ ] 我已经用一个真实任务复盘过一次 `thought -> action -> observation -> answer`。
+
+该 Base 是一个 ReAct 风格 Data Agent baseline，核心业务循环是：
+
+```text
+thought -> action -> observation -> answer
+```
+
+## cli.py（命令行入口）
+
+### 本节要点
+
+- 这是项目的外部入口，负责把命令行参数转换成可执行任务。
+- `run_benchmark(...)` 是 CLI 与业务编排层之间的桥梁函数。
+- CLI 层主要负责展示与调度，不负责核心推理逻辑。
 
 使用typer库，都是一些和cli命令行相关的代码，主要目的是通过该文件使得用户可以通过命令行的方式来查看项目的状态、运行项目。
 
@@ -34,6 +82,12 @@
 
 ## benchmark/schema.py
 
+### 本节要点
+
+- 该模块定义统一的数据结构，保证任务元信息、路径和答案表的表达一致。
+- `frozen=True` 提升数据安全性，`slots=True` 降低对象开销。
+- 后续模块通过这些数据类共享同一“数据契约”。
+
 该文件中定义了在项目执行过程中的一些数据结构，定义了 4 个不可变的数据类，用于结构化存储 DABench 项目中的任务元数据、文件路径、任务整体信息和答案表格数据。
 
 装饰器参数 frozen=True 和 slots=True
@@ -53,7 +107,13 @@
 方法：to_dict() 序列化支持，将 AnswerTable 对象转换成 Python 字典，方便保存为 JSON、写入文件或通过网络传输。
 注意：方法中用了 list(...) 复制列名和行数据，是为了防止外部代码修改返回的字典时，意外篡改 AnswerTable 内部的不可变数据（因为 frozen=True 只限制实例字段本身，不限制字段内部的可变对象，比如 list）。
 
-## benchmark/datdaset.py
+## benchmark/dataset.py（数据集加载）
+
+### 本节要点
+
+- 该模块是任务数据的统一访问入口，屏蔽底层文件读取细节。
+- 它负责把目录与 JSON 解析成结构化 `PublicTask`。
+- `iter_tasks()` / `get_task()` 是运行编排层最常用的数据读取接口。
 
 处理数据集输入
 
@@ -77,7 +137,13 @@ from data_agent_baseline.benchmark.schema import PublicTask, TaskAssets, TaskRec
 5. iter_tasks()：遍历 / 筛选任务（支持多种过滤条件）
 6. task_counts()：统计各难度的任务数量
 
-## run/runner.py
+## run/runner.py（任务编排核心）
+
+### 本节要点
+
+- 这是全项目最关键的编排层：加载任务、执行 Agent、落盘结果、汇总统计。
+- 通过子进程 + 超时包装，避免单任务卡死拖垮整次基准运行。
+- `run_single_task` 与 `run_benchmark` 分别对应“单任务执行”和“批任务调度”。
 
 这个文件是agent项目的主编排层，完成一系列 Tool Use 功能。
 
@@ -196,7 +262,9 @@ def run_benchmark(
 ) -> tuple[Path, list[TaskRunArtifacts]]:
 ```
 
-这里progress_callback参数是进度回调函数，每完成一个任务就调用一次，传入 TaskRunArtifacts（用于更新 Rich 进度条）。返回值`tuple[Path, list[TaskRunArtifacts]]`返回两个值：1. 本次测试的输出目录；2. 所有任务的 TaskRunArtifacts 列表。
+这里 `progress_callback` 参数是进度回调函数，每完成一个任务就调用一次，传入 `TaskRunArtifacts`（用于更新 Rich 进度条）。返回值 `tuple[Path, list[TaskRunArtifacts]]` 表示两个值：
+1. 本次测试的输出目录；
+2. 所有任务的 `TaskRunArtifacts` 列表。
 
 创建测试输出目录
 
@@ -230,7 +298,7 @@ task_ids = [task.task_id for task in tasks]
 调度分支：单线程 vs 多线程
 单线程模式（调试 / 测试场景）
 ```
-task_artifacts: list\[TaskRunArtifacts\]
+task_artifacts: list[TaskRunArtifacts]
 if effective_workers == 1:
     # 1. 预构建共享的 model 和 tools（避免每个任务都重新初始化，节省时间）
     shared_model = model or build_model_adapter(config)
@@ -325,7 +393,13 @@ run_benchmark 写 summary.json，返回输出目录和 task_artifacts。
 8. CLI 收尾层：
 run_benchmark_command 打印输出目录、成功 / 失败统计。
 
-## agent 工作流
+## agent 工作流（核心循环）
+
+### 本节要点
+
+- `agents/*` 负责把问题转成可执行的 ReAct 循环。
+- `prompt.py` 管规则，`model.py` 管模型适配，`react.py` 管循环，`runtime.py` 管记录。
+- 这里决定了“想什么、做什么、怎么记录、何时结束”。
 
 这个文件夹就是 Agent 从任务接收到生成答案如何执行的具体实现，有四个文件 agents/prompt.py、agents/model.py、agents/react.py、agents/runtime.py
 
@@ -626,7 +700,13 @@ class AgentRunResult:
         }
 ```
 
-## tools/registry.py
+## tools/registry.py（工具注册与终止控制）
+
+### 本节要点
+
+- 工具系统把模型能力扩展到文件读取、SQL 查询和 Python 执行。
+- `ToolRegistry` 统一做工具查找、调用与错误处理。
+- `answer` 是协议中的终止动作，决定一次任务何时成功收敛。
 
 文件定义了 Agent 可用的所有工具，并通过 ToolRegistry 统一管理。
 
@@ -747,7 +827,7 @@ _inspect_sqlite_schema、_execute_context_sql：操作 SQLite 数据库前先校
 2. read_json_preview：读取 JSON 文件的前 N 个字符
 3. read_doc_preview：读取文本类文件的前 N 个字符
 
-## tools/sqlite.py 
+## tools/sqlite.py
 
 文件实现 SQLite 数据库操作的底层辅助函数，是上层工具 _inspect_sqlite_schema 和 _execute_context_sql 的实现者，绝对只读（防止修改数据）和上下文友好（限制返回行数），让 Agent 能安全地探索和查询 SQLite 数据库。
 
@@ -757,7 +837,7 @@ _inspect_sqlite_schema、_execute_context_sql：操作 SQLite 数据库前先校
 
 函数 execute_read_only_sql 是上层工具 _execute_context_sql 的底层实现，严格的只读校验和行数限制，让 Agent 能安全地查询数据，同时防止返回结果太多撑爆模型上下文。将 SQL 去空格转小写，检查是否以 select、with（CTE，公用表表达式，也是只读）或 pragma（查询 SQLite 配置，只读）开头；禁止 INSERT、UPDATE、DELETE、DROP 等写操作，从语句层面防止修改数据；取 limit + 1 行判断截断。
 
-## tools/python_exec.py 
+## tools/python_exec.py
 
 这部分让 Agent 安全、隔离、可监控地执行任意 Python 代码。
 

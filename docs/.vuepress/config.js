@@ -7,7 +7,10 @@ module.exports = {
     ['meta', { name: 'keywords', content: 'Agent, LLM, AI, VuePress, 学习笔记' }]
   ],
   markdown: {
-    lineNumbers: true
+    lineNumbers: true,
+    extendMarkdown: md => {
+      md.use(require('markdown-it-task-lists'), { enabled: true })
+    }
   },
   themeConfig: {
     repo: '',
