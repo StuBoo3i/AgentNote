@@ -22,9 +22,14 @@ body
 
 .page
   background transparent
-  // Reserve sidebar width first, then add extra reading gutter on desktop
-  padding-left calc(20rem + 2.8rem)
-  padding-right 1.2rem
+  padding-right 1rem
+
+.theme-container.no-sidebar .page
+  padding-left 2rem
+
+.theme-container:not(.no-sidebar) .page
+  // Keep sidebar-safe offset, only slight right shift
+  padding-left calc(20rem + 1rem)
 
 .theme-default-content:not(.custom)
   background var(--content-bg)
@@ -32,16 +37,19 @@ body
   border-radius 14px
   padding 1.4rem 1.8rem
   box-shadow 0 10px 30px rgba(34, 65, 34, .06)
-  width calc(100% - 4rem)
-  max-width 1240px
-  margin 0 0 0 2.4rem
+  width auto
+  max-width 1160px
+  margin 0 auto
+
+.theme-container.no-sidebar .theme-default-content:not(.custom)
+  margin 0 auto
 
 .page-edit,
 .page-nav
-  width calc(100% - 4rem)
-  max-width 1240px
-  margin-left 2.4rem
-  margin-right 0
+  width auto
+  max-width 1160px
+  margin-left auto
+  margin-right auto
 
 .theme-default-content
   font-family 'PingFang SC', 'Noto Sans SC', 'Microsoft YaHei', 'Hiragino Sans GB', sans-serif
@@ -152,8 +160,8 @@ body
 .sidebar a.sidebar-link.active,
 .sidebar .sidebar-sub-headers a.sidebar-link,
 .sidebar .sidebar-sub-headers a.sidebar-link.active
-  border-left-width 0 !important
-  border-left-color transparent !important
+  border-left 0 !important
+  box-shadow none !important
 
 .sidebar .sidebar-sub-headers
   border-left none !important
