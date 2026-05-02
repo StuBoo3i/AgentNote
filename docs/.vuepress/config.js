@@ -17,6 +17,7 @@ module.exports = {
     editLinks: false,
     lastUpdated: '最后更新',
     smoothScroll: true,
+    activeHeaderLinks: false,
     sidebarDepth: 2,
     nav: [
       { text: '首页', link: '/' },

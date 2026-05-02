@@ -22,8 +22,8 @@ body
 
 .page
   background transparent
-  padding-left 2rem
-  padding-right 2rem
+  padding-left 2.6rem
+  padding-right 1.1rem
 
 .theme-default-content:not(.custom)
   background var(--content-bg)
@@ -31,14 +31,16 @@ body
   border-radius 14px
   padding 1.4rem 1.8rem
   box-shadow 0 10px 30px rgba(34, 65, 34, .06)
-  max-width 1080px
-  margin 0 auto
+  width calc(100% - 2.6rem)
+  max-width 1240px
+  margin 0 0 0 2rem
 
 .page-edit,
 .page-nav
-  max-width 1080px
-  margin-left auto
-  margin-right auto
+  width calc(100% - 2.6rem)
+  max-width 1240px
+  margin-left 2rem
+  margin-right 0
 
 .theme-default-content
   font-family 'PingFang SC', 'Noto Sans SC', 'Microsoft YaHei', 'Hiragino Sans GB', sans-serif
@@ -145,15 +147,20 @@ body
 #nprogress .spinner
   display none !important
 
-.sidebar .sidebar-link.active
+.sidebar a.sidebar-link,
+.sidebar a.sidebar-link.active,
+.sidebar .sidebar-sub-headers a.sidebar-link,
+.sidebar .sidebar-sub-headers a.sidebar-link.active
+  border-left-width 0 !important
+  border-left-color transparent !important
+
+.sidebar .sidebar-sub-headers
   border-left none !important
+
+.sidebar .sidebar-link.active
   padding-left 1.5rem !important
 
-.sidebar-sub-headers
-  border-left none !important
-
-.sidebar-sub-header .sidebar-link.active
-  border-left none !important
+.sidebar .sidebar-sub-header .sidebar-link.active
   padding-left 1rem !important
 
 @media (max-width: $MQMobile)
@@ -162,8 +169,16 @@ body
     padding-right 1rem
 
   .theme-default-content:not(.custom)
+    width 100%
+    margin 0
     padding 1rem 1rem
     border-radius 10px
+
+  .page-edit,
+  .page-nav
+    width 100%
+    margin-left 0
+    margin-right 0
 
   .theme-default-content
     font-size 16.5px
