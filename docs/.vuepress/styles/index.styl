@@ -1,0 +1,139 @@
+:root
+  --site-bg-start #edf3e7
+  --site-bg-end #f7fbf3
+  --content-bg #fbfff8
+  --content-border #dbe7d2
+  --content-text #243226
+  --content-muted #4e6350
+  --inline-code-bg #ecf6e9
+  --inline-code-text #2f6b39
+  --code-bg #f6fbff
+  --code-border #d7e7f7
+  --code-title-bg #ebf5ff
+  --code-text #1f2f43
+  --blockquote-border #9ec5a4
+
+body
+  background linear-gradient(160deg, var(--site-bg-start) 0%, var(--site-bg-end) 52%, #eef7ff 100%)
+  color var(--content-text)
+
+.theme-container
+  background transparent
+
+.page
+  background transparent
+
+.theme-default-content:not(.custom)
+  background var(--content-bg)
+  border 1px solid var(--content-border)
+  border-radius 14px
+  padding 1.4rem 1.8rem
+  box-shadow 0 10px 30px rgba(34, 65, 34, .06)
+
+.theme-default-content
+  font-family 'PingFang SC', 'Noto Sans SC', 'Microsoft YaHei', 'Hiragino Sans GB', sans-serif
+  font-size 17.5px
+  line-height 1.9
+  color var(--content-text)
+
+.theme-default-content h1,
+.theme-default-content h2,
+.theme-default-content h3,
+.theme-default-content h4
+  letter-spacing .2px
+  color #1f3523
+
+.theme-default-content p,
+.theme-default-content li
+  color var(--content-text)
+
+.theme-default-content strong
+  color #102615
+
+.theme-default-content code
+  background var(--inline-code-bg)
+  color var(--inline-code-text)
+  border-radius 6px
+  padding .12rem .35rem
+  font-size .92em
+  border 1px solid #d7ecd5
+
+.theme-default-content div[class*='language-']
+  background var(--code-bg)
+  border 1px solid var(--code-border)
+  border-radius 12px
+  box-shadow 0 8px 20px rgba(24, 62, 109, .08)
+  margin 1.1rem 0
+
+.theme-default-content div[class*='language-']::before
+  background var(--code-title-bg)
+  color #4f6783
+  border-bottom 1px solid var(--code-border)
+  border-top-left-radius 12px
+  border-top-right-radius 12px
+
+.theme-default-content div[class*='language-'] pre,
+.theme-default-content div[class*='language-'] code
+  background transparent
+  color var(--code-text)
+  font-size .95em
+
+.navbar .site-name
+  font-size 1.05rem
+
+.nav-links .nav-item > a
+  font-size .96rem
+
+.theme-default-content div[class*='language-'] .line-numbers-wrapper
+  background #eff6ff
+  border-right 1px solid var(--code-border)
+
+.theme-default-content div[class*='language-'] .line-numbers-wrapper .line-number
+  color #7a90ab
+
+.theme-default-content blockquote
+  color var(--content-muted)
+  border-left 4px solid var(--blockquote-border)
+  background #f3f9ef
+  border-radius 0 8px 8px 0
+  padding .6rem 1rem
+
+.theme-default-content table
+  border-collapse separate
+  border-spacing 0
+  width 100%
+  overflow hidden
+  border-radius 10px
+
+.theme-default-content tr:nth-child(even)
+  background #f7fbf3
+
+.theme-default-content th
+  background #eaf4e5
+  color #1e3824
+  font-weight 600
+
+.theme-default-content th,
+.theme-default-content td
+  border 1px solid #dbe8d4
+  padding .55rem .7rem
+
+.task-list-item
+  list-style none
+
+.task-list-item input[type='checkbox']
+  margin-right .45rem
+  transform translateY(1px)
+
+.navbar,
+.sidebar
+  backdrop-filter saturate(120%) blur(4px)
+
+@media (max-width: $MQMobile)
+  .theme-default-content:not(.custom)
+    padding 1rem 1rem
+    border-radius 10px
+
+  .theme-default-content
+    font-size 16.5px
+    line-height 1.86
