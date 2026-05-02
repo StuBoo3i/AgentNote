@@ -9,6 +9,9 @@ features:
   - title: Agent 实践
     details: 记录智能体的感知、思考、行动、观察循环，以及工具调用、规划反思和多智能体协作。
     link: /agents/
+  - title: Python 笔记
+    details: 记录 Python 语法、标准库、工程实践与代码阅读中的关键知识点。
+    link: /python/
   - title: 工程环境
     details: 记录 Linux、GPU、SSH、Docker、集群任务、环境配置和部署问题。
     link: /servers/

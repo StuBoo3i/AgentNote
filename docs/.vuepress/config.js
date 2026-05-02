@@ -19,6 +19,7 @@ module.exports = {
       { text: '首页', link: '/' },
       { text: '大模型笔记', link: '/large-models/' },
       { text: 'Agent笔记', link: '/agents/' },
+      { text: 'Python笔记', link: '/python/' },
       { text: '服务器集群笔记', link: '/servers/' },
       { text: 'KDD2026比赛分析', link: '/kdd2026/' }
     ],
@@ -53,6 +54,27 @@ module.exports = {
           ]
         }
       ],
+      '/python/': [
+        {
+          title: 'Python笔记',
+          collapsable: false,
+          children: [
+            '',
+            {
+              title: 'Python 学习记录',
+              path: 'pythonstudy'
+            },
+            {
+              title: 'Typer 命令行框架笔记',
+              path: 'Typer'
+            },
+            {
+              title: 'dataclasses 笔记',
+              path: 'dataclasses'
+            }
+          ]
+        }
+      ],
       '/kdd2026/': [
         {
           title: 'KDD2026比赛分析',
@@ -61,7 +83,8 @@ module.exports = {
             '',
             'data-agent-baseline-technical-report',
             'task-11-run-1-quality-report',
-            'run-2-quality-report'
+            'run-2-quality-report',
+            'codereading'
           ]
         }
       ],
