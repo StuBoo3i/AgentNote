@@ -22,6 +22,8 @@ body
 
 .page
   background transparent
+  padding-left 2rem
+  padding-right 2rem
 
 .theme-default-content:not(.custom)
   background var(--content-bg)
@@ -29,6 +31,14 @@ body
   border-radius 14px
   padding 1.4rem 1.8rem
   box-shadow 0 10px 30px rgba(34, 65, 34, .06)
+  max-width 1080px
+  margin 0 auto
+
+.page-edit,
+.page-nav
+  max-width 1080px
+  margin-left auto
+  margin-right auto
 
 .theme-default-content
   font-family 'PingFang SC', 'Noto Sans SC', 'Microsoft YaHei', 'Hiragino Sans GB', sans-serif
@@ -129,7 +139,28 @@ body
 .sidebar
   backdrop-filter saturate(120%) blur(4px)
 
+#nprogress,
+#nprogress .bar,
+#nprogress .peg,
+#nprogress .spinner
+  display none !important
+
+.sidebar .sidebar-link.active
+  border-left none !important
+  padding-left 1.5rem !important
+
+.sidebar-sub-headers
+  border-left none !important
+
+.sidebar-sub-header .sidebar-link.active
+  border-left none !important
+  padding-left 1rem !important
+
 @media (max-width: $MQMobile)
+  .page
+    padding-left 1rem
+    padding-right 1rem
+
   .theme-default-content:not(.custom)
     padding 1rem 1rem
     border-radius 10px
