@@ -22,8 +22,9 @@ body
 
 .page
   background transparent
-  padding-left 2.6rem
-  padding-right 1.1rem
+  // Reserve sidebar width first, then add extra reading gutter on desktop
+  padding-left calc(20rem + 2.8rem)
+  padding-right 1.2rem
 
 .theme-default-content:not(.custom)
   background var(--content-bg)
@@ -31,15 +32,15 @@ body
   border-radius 14px
   padding 1.4rem 1.8rem
   box-shadow 0 10px 30px rgba(34, 65, 34, .06)
-  width calc(100% - 2.6rem)
+  width calc(100% - 4rem)
   max-width 1240px
-  margin 0 0 0 2rem
+  margin 0 0 0 2.4rem
 
 .page-edit,
 .page-nav
-  width calc(100% - 2.6rem)
+  width calc(100% - 4rem)
   max-width 1240px
-  margin-left 2rem
+  margin-left 2.4rem
   margin-right 0
 
 .theme-default-content
