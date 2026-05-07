@@ -88,7 +88,9 @@ module.exports = {
             'data-agent-baseline-technical-report',
             'task-11-run-1-quality-report',
             'run-2-quality-report',
-            'codereading'
+            'codereading',
+            'RUN_20260507T121200Z_ANALYSIS',
+            'TASK_11_TIMEOUT_REPORT'
           ]
         }
       ],
