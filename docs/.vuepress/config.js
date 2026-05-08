@@ -89,8 +89,9 @@ module.exports = {
             'task-11-run-1-quality-report',
             'run-2-quality-report',
             'codereading',
-            'RUN_20260507T121200Z_ANALYSIS',
-            'TASK_11_TIMEOUT_REPORT'
+            'RUN_20260507T121200Z_RELAXED_ANALYSIS',
+            'TASK_11_TIMEOUT_REPORT',
+            'context_compression_design'
           ]
         }
       ],
