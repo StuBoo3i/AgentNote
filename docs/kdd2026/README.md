@@ -39,6 +39,16 @@
 - 来源：`混合整理`
 - 简介：设计 `Task Context Pack` 信息压缩节点，提升计划阶段的题目级 schema linking 和稳定性。
 
+### [关键信息压缩方案分析（基于项目代码）](./context-compression-solutions.md)
+
+- 来源：`混合整理`
+- 简介：基于现有 LangGraph Agent 代码路径分析问题根因，给出可执行的压缩优化方向和风险点。
+
+### [Task Context Pack 实施方案](./task-context-pack-implementation-plan.md)
+
+- 来源：`混合整理`
+- 简介：给出 Task Context Pack 的渐进式落地路线、代码改动点、验证标准和回滚策略。
+
 ## 来源标记说明
 
 为了让阅读者区分不同笔记来源，本栏目会在每篇笔记入口和正文顶部标注来源：
