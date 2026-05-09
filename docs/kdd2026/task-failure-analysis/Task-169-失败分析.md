@@ -4,51 +4,45 @@
 
 - Task：`task_169`
 - 题目：What was the average monthly consumption of customers in SME for the year 2013?
-- 失败标签：取值/计算错误
+- 失败标签：平均月消费公式少除以客户/记录数，量级错误
 - task.json：`/nfsdat/home/jwangslm/DataAnalysis/data/public/input/task_169/task.json`
+- knowledge.md：`/nfsdat/home/jwangslm/DataAnalysis/data/public/input/task_169/context/knowledge.md`
 - prediction.csv：`/nfsdat/home/jwangslm/DataAnalysis/artifacts/runs/20260508T152001Z/task_169/prediction.csv`
 - gold.csv：`/nfsdat/home/jwangslm/DataAnalysis/data/public/output/task_169/gold.csv`
 - trace.json：`/nfsdat/home/jwangslm/DataAnalysis/artifacts/runs/20260508T152001Z/task_169/trace.json`
 - Run：`20260508T152001Z`；`succeeded=True`；耗时 `35.578` 秒；steps `2`
-- 官方评估：`column_signature_match=False`；relaxed：`False`；failure_type：`value_mismatch`
+- 官方/relaxed 评估：未通过；结构差异：`column_name_mismatch`
+- gold 表头/行数：`['AVG(T2.Consumption) / 12']` / `1`；prediction 表头/行数：`['Consumption']` / `1`
 
-## 2. 模型是否读懂题意
+## 2. 模型是否结合题目和文件读懂题意
 
 结论：**部分读懂**。
 
-- 最终输出 `1` 列：`['AVG(T2.Consumption) / 12']`；gold 行数 `1`。
-- 列：prediction `['Consumption']` vs gold `['AVG(T2.Consumption) / 12']`。
-- 行数：prediction `1` vs gold `1`。
-- 多余行样例：[["82027220.30"]]
-- 缺失行样例：[["459.9562642871061"]]
-- 错值样例：["第 1 行第 1 列：prediction `82027220.30`，gold `459.9562642871061`"]
-- 判断依据：输出形状接近，但具体值错，说明题目核心字段、过滤条件、公式或单位没有读准。
-- 判断依据：第 1 行第 1 列：prediction `82027220.30`，gold `459.9562642871061`
+- 部分读懂。模型读懂 SME、2013、Consumption、除以 12；但没有读懂 “average ... of customers” 的平均对象，直接用 SUM(Consumption)/12，导致答案放大约 178337 倍/按记录平均的量级。
+- gold 列名是 AVG(T2.Consumption) / 12，值 459.9562642871061；prediction 是 SUM(Consumption)/12=82027220.30。
+- gold 样例：`[["459.9562642871061"]]`
+- prediction 样例：`[["82027220.30"]]`
+- knowledge 关键证据：
+- knowledge.md 有 Average Monthly Consumption 说明，但题面 “of customers” 应使聚合层为 AVG(Consumption)/12；Context Pack 已识别 operation_type=average，却 plan 改成 Total Annual Consumption/12。
 
 ## 3. Plan 阶段是否锁定最终答案契约
 
-结论：**部分锁定**。
-
-- Context Pack output={"Consumption": "yearmonth.Consumption"}；filter={}。
-- high_level_plan.answer_shape={"type": "scalar", "unit": "currency", "precision": "float"}。
-- 首个动作是 `execute_python`：files=csv/yearmonth.csv, db/customers.db; code=import sqlite3 import csv from decimal import Decimal # Step 1: Get all SME CustomerIDs from the database conn = sqlite3.connect('db/customers.db') cursor = conn.cursor()...。
-- plan 选择的数据源：["knowledge.md", "csv/yearmonth.csv", "db/customers.db"]。
+- 部分锁定但公式错误。high_level_plan objective 写 Total Annual Consumption / 12；Task Context Pack 写 operation_type=average、aggregations=[average]，二者冲突时没有校验。
 
 ## 4. Trace 失败链路
 
-失败发生环节：**计算/字段映射阶段 + 复算校验缺失**。
-
-- Step 1 `execute_python`：files=csv/yearmonth.csv, db/customers.db; code=import sqlite3 import csv from decimal import Decimal # Step 1: Get all SME CustomerIDs from the database conn = sqlite3.connect('db/customers.db') cursor = conn.cursor() cursor.execute("SELECT CustomerID FROM customers WHERE Segment = '... -> success=True; output=Number of SME customers: 26763 Total consumption for SME customers in 2013: 984326643.65 Number of records: 178337 Average monthly consumption: 82027220.30416666666666666667
-- Step 2 `answer`：columns=['Consumption']; row_count=1; rows_sample=[["82027220.30"]] -> status=submitted; row_count=1; column_count=1
+- Step 1 从 customers.db 取 SME CustomerID，共 26763。
+- Step 1 过滤 yearmonth.csv 的 2013 SME 记录，record_count=178337。
+- Step 1 计算 Total consumption=984326643.65，然后 average_monthly=984326643.65/12=82027220.304。
+- Step 2 answer 提交 Consumption=82027220.30。
 
 ## 5. 根因与项目修改建议
 
 根因：
-- 字段映射、过滤条件或计算公式错误；输出形状不足以保证值正确。
-- 模型对题意是“部分读懂”，没有把题目约束完整落到查询和 answer。
+- metric planner 忽略 Context Pack 的 average 信号，选择了 total/month。
+- 缺少量级 sanity check：平均客户月消费不应等于全体 SME 月总消费。
 
 项目修改建议：
-- `context_pack.py`：在 pack 中必须输出最终 answer columns、answer grain、filter fields；当 source_map 为空时给 planner 明确的 fallback schema scan 指令。
-- `langgraph_agent.py`：build_plan 后检查 high_level_plan 是否写出最终列和行粒度；缺失时追加一次 deterministic repair plan，不直接进入 ReAct。
-- `controlled_query.py`：对数值/比例/阈值题增加复算 IR 校验，要求候选值能由 observation 中的字段和公式重算出来。
-- fallback/repair：最终 answer 与 plan 契约不一致时，不提交；基于最近一次 tool observation 做一次确定性修复。
+- context_pack.py：把 “average monthly consumption of customers” 规范成 AVG(Consumption)/12，并记录 denominator_grain=customer/month record。
+- langgraph_agent.py：plan 与 context_pack 聚合类型冲突时阻断，要求重新生成公式。
+- answer validation：对 average 问题若表达式只含 SUM/12 且没有 AVG 或除以 count，发出 hard repair。

@@ -4,51 +4,44 @@
 
 - Task：`task_173`
 - 题目：Please list the countries of the gas stations with transactions taken place in June, 2013.
-- 失败标签：行数/筛选范围错误
+- 失败标签：选错/未校验时间覆盖的数据源，空答后提交调试列
 - task.json：`/nfsdat/home/jwangslm/DataAnalysis/data/public/input/task_173/task.json`
+- knowledge.md：`/nfsdat/home/jwangslm/DataAnalysis/data/public/input/task_173/context/knowledge.md`
 - prediction.csv：`/nfsdat/home/jwangslm/DataAnalysis/artifacts/runs/20260509T074040Z/task_173/prediction.csv`
 - gold.csv：`/nfsdat/home/jwangslm/DataAnalysis/data/public/output/task_173/gold.csv`
 - trace.json：`/nfsdat/home/jwangslm/DataAnalysis/artifacts/runs/20260509T074040Z/task_173/trace.json`
 - Run：`20260509T074040Z`；`succeeded=True`；耗时 `36.32` 秒；steps `3`
-- 官方评估：`column_signature_match=False`；relaxed：`False`；failure_type：`row_count_mismatch`
+- 官方/relaxed 评估：未通过；结构差异：`column_name_mismatch, row_count_mismatch`
+- gold 表头/行数：`['Country']` / `2`；prediction 表头/行数：`['MIN(Date)']` / `0`
 
-## 2. 模型是否读懂题意
+## 2. 模型是否结合题目和文件读懂题意
 
 结论：**部分读懂**。
 
-- 最终输出 `1` 列：`['Country']`；gold 行数 `2`。
-- 题目要求列举，行粒度必须是被问实体，而不是中间记录。
-- 列：prediction `['MIN(Date)']` vs gold `['Country']`。
-- 行数：prediction `0` vs gold `2`。
-- 缺失行样例：[["CZE"], ["SVK"]]
-- 判断依据：列数接近或部分接近，但行数不对：prediction `0`，gold `2`。
-- 判断依据：模型提交了空结果，说明筛选条件或数据源判断已经偏离。
+- 部分读懂。模型读懂要输出 gas station Country，也读懂 June 2013；但执行时只查 transactions_1k.db，而该库 trace 显示日期范围只有 2012-08-23 到 2012-08-26。
+- gold 是 Country 两行 CZE、SVK；prediction 是 MIN(Date) 空表。
+- gold 样例：`[["CZE"], ["SVK"]]`
+- prediction 样例：`[]`
+- knowledge 关键证据：
+- knowledge.md 说明 YearMonth.Date 是 YYYYMM，GasStations.Country 是输出字段；transactions_1k.db 的 Date 是实际交易日期，必须先做数据覆盖检查。
 
 ## 3. Plan 阶段是否锁定最终答案契约
 
-结论：**部分锁定**。
-
-- Task Context Pack 没有给出 output/filter 字段来源，source_map 基本为空。
-- high_level_plan.answer_shape={"notes": "Array of strings representing unique country identifiers (e.g., ['CZE', 'SVK'])."}。
-- 首个动作是 `execute_context_sql`：path=db/transactions_1k.db; sql=SELECT DISTINCT GasStationID FROM transactions_1k WHERE Date >= '2013-06-01' AND Date <= '2013-06-30'。
-- plan 选择的数据源：["db/transactions_1k.db", "json/gasstations.json", "knowledge.md"]。
+- 计划看似正确但未锁定失败恢复。high_level_plan 写 distinct GasStationID where Date in June 2013，再 join gasstations.Country；Task Context Pack 却错误识别 operation_type=count，且没有 output_field_sources。
 
 ## 4. Trace 失败链路
 
-失败发生环节：**查表/筛选阶段 + 行粒度校验缺失**。
-
-- Step 1 `execute_context_sql`：path=db/transactions_1k.db; sql=SELECT DISTINCT GasStationID FROM transactions_1k WHERE Date >= '2013-06-01' AND Date <= '2013-06-30' -> row_count=0; truncated=False; columns=["GasStationID"]; rows=[]
-- Step 2 `execute_context_sql`：path=db/transactions_1k.db; sql=SELECT MIN(Date), MAX(Date) FROM transactions_1k -> row_count=1; truncated=False; columns=["MIN(Date)", "MAX(Date)"]; rows=[["2012-08-23", "2012-08-26"]]
-- Step 3 `answer`：columns=['MIN(Date)']; row_count=0; rows_sample=[] -> status=submitted; row_count=0; column_count=1
+- Step 1 查询 transactions_1k where Date between 2013-06-01 and 2013-06-30，返回 0 行。
+- Step 2 立刻查询 MIN(Date), MAX(Date)，得到 2012-08-23 到 2012-08-26，证明所选源不覆盖题目月份。
+- Step 3 answer 提交 columns=[MIN(Date)] rows=[]，完全偏离 Country 输出契约。
 
 ## 5. 根因与项目修改建议
 
 根因：
-- 筛选范围或行粒度错误：提交 `0` 行，gold 是 `2` 行。
-- 模型对题意是“部分读懂”，没有把题目约束完整落到查询和 answer。
+- 数据源覆盖性校验太晚；发现 source 不含 2013-06 后没有回退。
+- answer 阶段允许把调试 SQL 列 MIN(Date) 当最终答案列提交。
 
 项目修改建议：
-- `context_pack.py`：在 pack 中必须输出最终 answer columns、answer grain、filter fields；当 source_map 为空时给 planner 明确的 fallback schema scan 指令。
-- `langgraph_agent.py`：build_plan 后检查 high_level_plan 是否写出最终列和行粒度；缺失时追加一次 deterministic repair plan，不直接进入 ReAct。
-- `controlled_query.py` / fallback：对空结果、过多行、过少行触发二次查询，尤其检查日期范围、join key、distinct 粒度。
-- fallback/repair：最终 answer 与 plan 契约不一致时，不提交；基于最近一次 tool observation 做一次确定性修复。
+- controlled_query.py：日期过滤前先做 min/max coverage；若目标日期不在源范围内，禁止基于该源提交空答。
+- context_pack.py：将 Country 明确标为 output_field，GasStationID 为 join_key，Date 为 filter-only。
+- fallback/repair：零结果且覆盖性不满足时，重新枚举可用源或触发“source mismatch”修复，不允许提交诊断列。

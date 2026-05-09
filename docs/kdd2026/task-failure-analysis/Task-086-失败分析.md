@@ -4,51 +4,45 @@
 
 - Task：`task_86`
 - 题目：Which race was Alex Yoong in when he was in track number less than 20?
-- 失败标签：行数/筛选范围错误
+- 失败标签：歧义字段 track number 映射错误，额外输出 Japanese Grand Prix
 - task.json：`/nfsdat/home/jwangslm/DataAnalysis/data/public/input/task_86/task.json`
+- knowledge.md：`/nfsdat/home/jwangslm/DataAnalysis/data/public/input/task_86/context/knowledge.md`
 - prediction.csv：`/nfsdat/home/jwangslm/DataAnalysis/artifacts/runs/20260508T152001Z/task_86/prediction.csv`
 - gold.csv：`/nfsdat/home/jwangslm/DataAnalysis/data/public/output/task_86/gold.csv`
 - trace.json：`/nfsdat/home/jwangslm/DataAnalysis/artifacts/runs/20260508T152001Z/task_86/trace.json`
 - Run：`20260508T152001Z`；`succeeded=True`；耗时 `58.145` 秒；steps `4`
-- 官方评估：`column_signature_match=False`；relaxed：`False`；failure_type：`row_count_mismatch`
+- 官方/relaxed 评估：未通过；结构差异：`row_count_mismatch, value_mismatch`
+- gold 表头/行数：`['name']` / `16`；prediction 表头/行数：`['name']` / `18`
 
-## 2. 模型是否读懂题意
+## 2. 模型是否结合题目和文件读懂题意
 
 结论：**部分读懂**。
 
-- 最终输出 `1` 列：`['name']`；gold 行数 `16`。
-- 题目要求列举，行粒度必须是被问实体，而不是中间记录。
-- 列：prediction `['name']` vs gold `['name']`。
-- 行数：prediction `18` vs gold `16`。
-- 多余行样例：[["Japanese Grand Prix"], ["Japanese Grand Prix"]]
-- 判断依据：列数接近或部分接近，但行数不对：prediction `18`，gold `16`。
+- 部分读懂。模型读懂了人物 Alex Yoong 和输出 race name，但没有真正 grounding “track number”；它直接把 track number 当 races.round，导致多出两个 Japanese Grand Prix。
+- gold 16 行，prediction 18 行；prediction 额外包含 Japanese Grand Prix 两次。
+- gold 样例：`[["Australian Grand Prix"], ["Malaysian Grand Prix"], ["Brazilian Grand Prix"], ["San Marino Grand Prix"], ["Spanish Grand Prix"]]`
+- prediction 样例：`[["Australian Grand Prix"], ["Malaysian Grand Prix"], ["Brazilian Grand Prix"], ["San Marino Grand Prix"], ["Spanish Grand Prix"]]`
+- knowledge 关键证据：
+- knowledge.md 同时存在 races.round、circuits.circuitId、drivers.number 等多个 number-like 字段；“track number”不是明确 schema 字段，必须标记低置信映射，而不是直接等同 round。
 
 ## 3. Plan 阶段是否锁定最终答案契约
 
-结论：**部分锁定**。
-
-- Context Pack output={"number": "drivers.number"}；filter={}。
-- high_level_plan.answer_shape={"notes": "A list of strings containing race names."}。
-- 首个动作是 `read_json`：{"path": "json/drivers.json", "max_chars": 5000}。
-- plan 选择的数据源：["json/drivers.json", "csv/driverStandings.csv", "csv/races.csv"]。
+- 锁定错误。high_level_plan 明确写 races.round < 20，并用 driverStandings 当参与记录；Task Context Pack 反而把 number 映射到 drivers.number，显示 pack 与 plan 已不一致。
 
 ## 4. Trace 失败链路
 
-失败发生环节：**查表/筛选阶段 + 行粒度校验缺失**。
-
-- Step 1 `read_json`：{"path": "json/drivers.json", "max_chars": 5000} -> truncated=True
-- Step 2 `execute_python`：files=json/drivers.json; code=import json with open('json/drivers.json', 'r') as f: data = json.load(f) # Find Alex Yoong for record in data['records']: if record.get('forename') == 'Alex' and record.get('surname') == 'Yoong': print(f"Found Alex Yoong: driverId={reco... -> success=True; output=Found Alex Yoong: driverId=62, driverRef=yoong
-- Step 3 `execute_python`：files=csv/driverStandings.csv, csv/races.csv; code=import csv import json # Load Alex Yoong's driverId yoong_driver_id = 62 # Read driverStandings to get raceIds for Alex Yoong yoong_race_ids = set() with open('csv/driverStandings.csv', 'r') as f: reader = csv.DictReader(f) for row in re... -> success=True; output=Alex Yoong participated in 18 races Found 18 races with round < 20: Round 1: Australian Grand Prix (2002) Round 2: Malaysian Grand Prix (2002) Round 3: Brazilian Grand Prix (2002) Round 4: San Marino Grand Prix (2002) Round 5: Spanish Grand Prix (2002) Roun...
-- Step 4 `answer`：columns=['name']; row_count=18; rows_sample=[["Australian Grand Prix"], ["Malaysian Grand Prix"]] -> status=submitted; row_count=18; column_count=1
+- Step 2 找到 Alex Yoong driverId=62。
+- Step 3 用 driverStandings 取到 18 个 raceId，再按 races.round < 20 输出 18 场。
+- Step 3 输出的最后两行是 Round 17 Japanese Grand Prix (2002) 和 Round 17 Japanese Grand Prix (2001)，正是 gold 没有的两行。
+- Step 4 answer 提交 18 行 name。
 
 ## 5. 根因与项目修改建议
 
 根因：
-- 筛选范围或行粒度错误：提交 `18` 行，gold 是 `16` 行。
-- 模型对题意是“部分读懂”，没有把题目约束完整落到查询和 answer。
+- 计划阶段把未证实的自然语言 “track number” 固定成 round，缺少歧义字段确认。
+- 使用 driverStandings 作为“参加比赛”的代理，未校验该源是否符合题目中的 track 条件。
 
 项目修改建议：
-- `context_pack.py`：在 pack 中必须输出最终 answer columns、answer grain、filter fields；当 source_map 为空时给 planner 明确的 fallback schema scan 指令。
-- `langgraph_agent.py`：build_plan 后检查 high_level_plan 是否写出最终列和行粒度；缺失时追加一次 deterministic repair plan，不直接进入 ReAct。
-- `controlled_query.py` / fallback：对空结果、过多行、过少行触发二次查询，尤其检查日期范围、join key、distinct 粒度。
-- fallback/repair：最终 answer 与 plan 契约不一致时，不提交；基于最近一次 tool observation 做一次确定性修复。
+- context_pack.py：number-like 词汇要输出候选字段列表和 low_confidence_mappings；track number 不允许直接落到 round。
+- controlled_query.py：对歧义字段生成 IR 校验，要求字段名证据来自 schema/knowledge/文件上下文。
+- repair：当结果只比 gold-like 契约多出重复赛事/边界轮次时，触发边界条件复查，而不是直接提交。

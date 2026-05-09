@@ -4,51 +4,44 @@
 
 - Task：`task_259`
 - 题目：Among the posts with views ranging from 100 to 150, what is the comment with the highest score?
-- 失败标签：列契约错误
+- 失败标签：选中正确评论但输出错列，并从截断日志幻写 Text
 - task.json：`/nfsdat/home/jwangslm/DataAnalysis/data/public/input/task_259/task.json`
+- knowledge.md：`/nfsdat/home/jwangslm/DataAnalysis/data/public/input/task_259/context/knowledge.md`
 - prediction.csv：`/nfsdat/home/jwangslm/DataAnalysis/artifacts/runs/20260508T152001Z/task_259/prediction.csv`
 - gold.csv：`/nfsdat/home/jwangslm/DataAnalysis/data/public/output/task_259/gold.csv`
 - trace.json：`/nfsdat/home/jwangslm/DataAnalysis/artifacts/runs/20260508T152001Z/task_259/trace.json`
 - Run：`20260508T152001Z`；`succeeded=True`；耗时 `41.78` 秒；steps `3`
-- 官方评估：`column_signature_match=False`；relaxed：`False`；failure_type：`column_count_mismatch`
+- 官方/relaxed 评估：未通过；结构差异：`column_count_mismatch, column_name_mismatch`
+- gold 表头/行数：`['Text']` / `1`；prediction 表头/行数：`['Id', 'Score', 'Text']` / `1`
 
-## 2. 模型是否读懂题意
+## 2. 模型是否结合题目和文件读懂题意
 
 结论：**部分读懂**。
 
-- 最终输出 `1` 列：`['Text']`；gold 行数 `1`。
-- 列：prediction `['Id', 'Score', 'Text']` vs gold `['Text']`。
-- 行数：prediction `1` vs gold `1`。
-- 多余行样例：[["90813", "14", "Welcome to Cross Validated David P, for more information about the site and how to ask questions, you may want to visit Meta first."]]
-- 缺失行样例：[["Welcome to Cross Validated David P, for more information about the site and how to ask questions, you can check out the [FAQ](http://stats.stackexchange.com/faq). Is your question just about whether the calculation...
-- 错值样例：["第 1 行第 1 列：prediction `90813`，gold `Welcome to Cross Validated David P, for more information about the site and how to ask questions, you can check out the [FAQ](http://stats.stackexchange.com/faq). Is your question just about whether the calculation is r...
-- 判断依据：模型找到了一批候选结果，但输出列 `['Id', 'Score', 'Text']` 没有收敛到 gold 要的 `['Text']`。
+- 部分读懂。模型找到了 ViewCount 100-150 范围内 Score 最高的 comment Id=90813，但题目问 “what is the comment”，gold 只要 Text；prediction 多输出 Id/Score，且 Text 不是 csv 中完整原文。
+- gold 只有 Text 一列；comments.csv 中 Id=90813 的完整 Text 与 gold 一致。prediction 的 Text 变成 “you may want to visit Meta first.”，不是该行真实内容。
+- gold 样例：`[["Welcome to Cross Validated David P, for more information about the site and how to ask questions, you can check out the [FAQ](http://stats.stackexchange.com/faq). Is your question just about whether the calculation is right or wrong (it is wrong, with the numbers you give on your second line the result of the operation is 0.187, rounded)? Otherwise, yes, a percentage can be as close to zero as you can imagine because it is bounded between 0 and 100 and continuous on that interval."]]`
+- prediction 样例：`[["90813", "14", "Welcome to Cross Validated David P, for more information about the site and how to ask questions, you may want to visit Meta first."]]`
+- knowledge 关键证据：
+- knowledge.md 明确 Comments 有 Id/PostId/Score/Text；最高分是筛选条件，最终 output 应是 Text，不是 Id 和 Score。
 
 ## 3. Plan 阶段是否锁定最终答案契约
 
-结论：**部分锁定**。
-
-- Context Pack output={"Score": "posts.Score"}；filter={}。
-- high_level_plan.answer_shape={"type": "object", "properties": {"comment_id": "integer", "score": "integer", "text": "string"}, "description": "Details of the comment(s) with the highest score meeting the criteria."}。
-- 首个动作是 `execute_context_sql`：path=db/posts.db; sql=SELECT Id FROM posts WHERE ViewCount >= 100 AND ViewCount <= 150。
-- plan 选择的数据源：["csv/comments.csv", "db/posts.db", "knowledge.md"]。
+- 锁定错误。high_level_plan Step 7 写 final result including CommentId, Score, and Text；Task Context Pack 还错误把 Score 映射到 posts.Score，没有 grounding 到 comments.Score。
 
 ## 4. Trace 失败链路
 
-失败发生环节：**输出阶段 + 校验缺失**。
-
-- Step 1 `execute_context_sql`：path=db/posts.db; sql=SELECT Id FROM posts WHERE ViewCount >= 100 AND ViewCount <= 150 -> row_count=200; truncated=True; columns=["Id"]; rows=[[51], [62]]
-- Step 2 `execute_python`：files=csv/comments.csv, db/posts.db; code=import sqlite3 import csv # Get all post IDs with ViewCount between 100 and 150 conn = sqlite3.connect('db/posts.db') cursor = conn.cursor() cursor.execute("SELECT Id FROM posts WHERE ViewCount >= 100 AND ViewCount <= 150") post_ids = [r... -> success=True; output=Found 5088 posts with views between 100-150 Found 11817 comments on those posts Max score: 14 Number of comments with max score: 1 Comment Id: 90813, Score: 14, Text: Welcome to Cross Validated David P, for more information about the site and how to ask que...
-- Step 3 `answer`：columns=['Id', 'Score', 'Text']; row_count=1; rows_sample=[[90813, 14, "Welcome to Cross Validated David P, for more information about the site and how to ask questions, you may want to visit Meta first."]] -> status=submitted; row_count=1; column_count=3
+- Step 1 SQL 找到 ViewCount 100-150 的 posts。
+- Step 2 过滤 comments 后得到 11817 条，Max score=14，唯一 top comment Id=90813，并只打印 Text 前 100 字加省略号。
+- Step 3 answer 提交 Id,Score,Text 三列；Text 尾部不是 comments.csv 的完整值，说明模型根据截断 observation 续写/替换了内容。
 
 ## 5. 根因与项目修改建议
 
 根因：
-- 最终输出列没有裁剪：提交 `['Id', 'Score', 'Text']`，gold 只要 `['Text']`。
-- 模型对题意是“部分读懂”，没有把题目约束完整落到查询和 answer。
+- 答案列契约错：Score 是排序/筛选字段，不是输出字段。
+- 长文本数据没有从源行完整传递到 answer，模型使用截断日志生成最终内容。
 
 项目修改建议：
-- `context_pack.py`：在 pack 中必须输出最终 answer columns、answer grain、filter fields；当 source_map 为空时给 planner 明确的 fallback schema scan 指令。
-- `langgraph_agent.py`：build_plan 后检查 high_level_plan 是否写出最终列和行粒度；缺失时追加一次 deterministic repair plan，不直接进入 ReAct。
-- `langgraph_agent.py`：answer 前按 expected columns 做列裁剪；多列且包含 gold 所需列时自动投影，不让冗余列提交。
-- `runner/trace metadata`：记录本任务历史正确 run 的 SQL/Python 路径，与当前 run 自动 diff，定位模型漂移造成的字段或过滤变化。
+- langgraph_agent.py：answer 对长文本字段必须来自 tool 返回的结构化完整值，禁止从带省略号的 stdout 拼答案。
+- context_pack.py：highest score/maximum score 中 Score 标为 sort/filter field，output_fields 只保留 Text。
+- controlled_query.py：top-k 查询返回完整行 JSON 或临时结果文件路径，避免 stdout 截断。
