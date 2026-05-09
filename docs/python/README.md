@@ -5,8 +5,11 @@
 ## 已有笔记
 
 - [Python 学习记录](./pythonstudy.md)
+  - 上传时间：`2026-05-02`
 - [Typer 命令行框架笔记](./Typer.md)
+  - 上传时间：`2026-05-02`
 - [dataclasses 笔记](./dataclasses.md)
+  - 上传时间：`2026-05-02`
 
 ## 新增笔记方法
 

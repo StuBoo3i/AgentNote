@@ -91,9 +91,12 @@ module.exports = {
             'codereading',
             'RUN_20260507T121200Z_RELAXED_ANALYSIS',
             'TASK_11_TIMEOUT_REPORT',
+            'TASK_11_CONTEXT_PACK_BENCHMARK_REPORT',
             'context_compression_design',
             'context-compression-solutions',
-            'task-context-pack-implementation-plan'
+            'task-context-pack-implementation-plan',
+            'task-failure-analysis/',
+            'file-change-notes/'
           ]
         }
       ],
