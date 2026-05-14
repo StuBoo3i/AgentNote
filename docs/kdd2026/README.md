@@ -64,6 +64,18 @@
 - 上传时间：`2026-05-08`
 - 简介：给出 Task Context Pack 的渐进式落地路线、代码改动点、验证标准和回滚策略。
 
+### [Context Pack 优化与改进落地方案](./CONTEXT_PACK_OPTIMIZATION_LANDING_PLAN.md)
+
+- 来源：`混合整理`
+- 上传时间：`2026-05-14`
+- 简介：基于失败案例复盘给出可执行的 Context Pack 升级路径，覆盖答案契约、字段 grounding、公式识别与执行校验。
+
+### [KDD Cup 2026 Docker 评测适配报告](./KDD2026_DOCKER_ADAPTATION_REPORT.md)
+
+- 来源：`混合整理`
+- 上传时间：`2026-05-14`
+- 简介：对照官方评测 PDF 说明容器双模式改造、输入输出规范适配和提交打包流程。
+
 ### [Task 失败案例分析（子栏目）](./task-failure-analysis/)
 
 - 来源：`混合整理`
