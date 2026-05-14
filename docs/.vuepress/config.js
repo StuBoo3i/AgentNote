@@ -96,6 +96,7 @@ module.exports = {
             'context-compression-solutions',
             'task-context-pack-implementation-plan',
             'CONTEXT_PACK_OPTIMIZATION_LANDING_PLAN',
+            'TASK_25_80_163_218_257_415_FAILURE_FIX_IMPLEMENTATION_PLAN',
             'KDD2026_DOCKER_ADAPTATION_REPORT',
             'task-failure-analysis/',
             'file-change-notes/'

@@ -153,3 +153,87 @@ task context files
 - 不导入 `knowledge.md`、`doc/*.md`，文档语义仍走原文本工具。
 - JSON 只支持 records 风格结构；任意深层嵌套知识图谱不会展开成多级关系表。
 - 表名和列名会被规范化，模型需要使用 `inspect_unified_schema` 中展示的实际 SQL 名称。
+
+## 2026-05-14 追加记录：增强 join candidate 推断
+
+### 为什么修改
+
+统一 SQLite DB 已经解决了 CSV/JSON/DB 的统一查询入口，但失败复盘显示，planner 仍可能因为 join path 不明显而猜错：
+
+- `expense.link_to_budget -> budget.budget_id -> event.event_id` 这类 `link_to_*` 字段不是同名 id。
+- `posts.LastEditorUserId -> users.Id`、`posts.OwnerUserId -> users.Id` 需要结合表名判断实体。
+- `postHistory.PostId -> posts.Id` 也不是完全同名。
+- `satscores.cds -> schools.CDSCode` 是同一学校代码的不同命名。
+
+原 `_join_reason()` 主要处理同名 id-like 字段，对这些跨文件常见关系覆盖不足。
+
+### 修改成了什么运行逻辑
+
+新增实体和字段归一化 helper：
+
+```python
+_entity_in_table(...)
+_link_to_entity(...)
+_field_entity(...)
+_is_table_id_for_entity(...)
+```
+
+并将 `_join_reason()` 从只看两个列名改成同时看表名和列名：
+
+```python
+_join_reason(left_table, left_column, right_table, right_column)
+```
+
+新增 join 推断类型：
+
+```text
+link_to_budget <-> budget_id / id on budget-like table
+link_to_event <-> event_id / id on event-like table
+OwnerUserId / LastEditorUserId / UserId <-> id on users-like table
+PostId <-> id on posts-like table
+cds <-> CDSCode
+```
+
+置信度规则也做了保守处理：
+
+- 有 sampled value overlap 时标记 `high`。
+- 没有 overlap 但 schema 关系很明确，如 `link_to_*`、user/post 引用、`cds/CDSCode`，保持 `medium`。
+- 非同名且缺少 schema 实体证据的候选降为 `low` 或不生成。
+
+### 对项目流程的影响
+
+修改前：
+
+```text
+build_unified_db()
+  -> _build_join_candidates()
+  -> mostly same normalized id-like fields
+```
+
+修改后：
+
+```text
+build_unified_db()
+  -> _build_join_candidates()
+  -> same id-like fields
+  -> link_to_* entity joins
+  -> user/post reference joins
+  -> CDS school code joins
+  -> join_candidates 写入 _join_candidates 并暴露给 Context Pack / trace
+```
+
+planner 在 `inspect_unified_schema` 和 `task_context_pack.answer_contract.joins` 中能看到更完整的 join path，减少凭字段名硬猜。
+
+### 对任务执行改善了什么
+
+- `task_163`：更容易形成 `expense -> budget -> event` 的路径，支撑 event.type + SUM(cost)。
+- `task_218`：更容易形成 `satscores.cds -> schools.CDSCode`，避免只在单表中按 NULL 排序取错学校电话。
+- `task_257`：更容易形成 `posts.LastEditorUserId -> users.Id` 和 `postHistory.PostId -> posts.Id`，支撑 last user DisplayName。
+- 其他跨 CSV/JSON/DB 任务也能从更完整的 join candidates 中受益。
+
+### 边界
+
+- 仍只处理 CSV/JSON/DB 导入后的结构化表，不处理 Markdown 事实。
+- join candidate 只是候选，不直接执行 join。
+- 没有采样重叠时不会标成 high confidence，避免过强先验。
+- 表名和字段名必须能提供实体线索；完全无语义命名的列不会被强行关联。

@@ -84,3 +84,95 @@ pack_metadata
 - `context_pack.py` 不负责构建 unified DB，只消费 `context_profile["unified_db"]`。
 - Markdown/knowledge 文件不会进入 unified DB，仍由原文档读取和 knowledge facts 逻辑处理。
 - 如果 unified DB 构建失败，Context Pack 仍可退回原有结构化 source profiling。
+
+## 2026-05-14 追加记录：Answer Contract 与题意契约增强
+
+### 为什么修改
+
+针对 `task_25/task_80/task_163/task_218/task_257/task_415` 的失败复盘，问题集中在模型虽然读取了文件，但没有在 plan 阶段稳定锁定最终答案契约：
+
+- `lowest cost` 被误改写成 `SUM(cost) GROUP BY event`，行级指标和聚合指标混淆。
+- `type` 在 event 场景下被误投影为 `expense_description`。
+- `his number of the driver` 被当成普通 `number` 或 count 线索，未优先 driver 实体字段。
+- `average score in reading` 已有 `AvgScrRead` 指标列，但执行时容易按聚合或 NULL 排序误选。
+- `Identify A. Name B.`、`What is A? Please give B.` 这类多输出题缺少明确输出槽。
+- `last time` 类语义未优先 `LastEditorUserId` / history，而容易回退到 owner。
+
+### 修改成了什么运行逻辑
+
+新增 `answer_contract`，并在 `build_task_context_pack()` 中作为固定结构输出：
+
+```text
+answer_contract.expected_columns
+answer_contract.row_grain
+answer_contract.metric_grain
+answer_contract.filters
+answer_contract.sort
+answer_contract.joins
+answer_contract.match_policies
+answer_contract.warnings
+answer_contract.scoring_note
+```
+
+核心新增函数：
+
+```python
+infer_answer_contract(...)
+_iter_contract_fields(...)
+_choose_contract_field(...)
+_contract_join_candidates(...)
+_dedupe_joins(...)
+```
+
+具体逻辑：
+
+- 扩展 `_FIELD_SYNONYMS`，覆盖 `phone/url/constructorRef/ViewCount/DisplayName/AvgScrRead` 等低风险同义词。
+- 改进 `infer_question_intent()` 中 `number of` 的判断，新增 `_is_field_number_question()`，避免把 `driver number/phone number/race number` 误判成 count。
+- 对 `constructor reference name` 生成 `constructorRef` 输出槽，对 `website` 生成 `url` 输出槽。
+- 对 `telephone/phone` 生成电话字段输出槽。
+- 对 `total views/view count/views` 优先映射现成 `ViewCount` 指标。
+- 对 event anchor 下的 `type` 优先精确匹配 event 表 `type` 字段。
+- 对 `lowest cost` 且无 `total/sum/group/per` 证据的题，生成 row-level sort contract，而不是聚合 contract。
+- 对 `total value/cost` 明确生成 `SUM(cost)` aggregate slot。
+- 对 `average score in reading` 优先识别现成 `AvgScrRead`，并在 lowest 场景下生成 `exclude_nulls` 排序规则。
+- 对 quoted post/event title 生成 `normalized_equals` filter 和大小写容错 match policy。
+- 对 `last` + post 语义生成 `LastEditorUserId -> users.Id` 高置信 join 候选。
+
+`build_execution_plan()` 和 `build_validation_checks()` 也同步读取 `answer_contract`：
+
+- plan 中会写明应保留哪些 value slots。
+- ranking plan 会写明排序字段和 `null_policy`。
+- validation checks 会提示 header/列顺序不参与评分，但每行 value vector 必须完整。
+
+### 对项目流程的影响
+
+修改前，Context Pack 主要给出 `question_intent/source_map`，planner 仍可能自行解释输出列、聚合粒度和排序规则。
+
+修改后，Context Pack 在 LLM 之前确定一份保守的“答案契约”：
+
+```text
+context/profile
+  -> build_task_context_pack()
+  -> infer_answer_contract()
+  -> high_level_plan prompt
+  -> ReAct prompt
+  -> answer validation warnings
+```
+
+该过程不新增 LLM 调用，不读取 gold，不写 task_id 特例。所有规则都依赖题目文本证据和 schema/字段证据；低置信内容只进入 prompt 或 warning，不直接硬拒绝答案。
+
+### 对任务执行改善了什么
+
+- `task_25`：把 `lowest cost` 固定为行级 cost 排序，提醒保留最低 cost ties，避免默认按 event 汇总。
+- `task_80`：`his number of the driver` 优先 driver 表 `number`，并生成 q3 时间格式容错策略。
+- `task_163`：event anchor 下的 `type` 优先 event 表字段，`total value approved` 对应 `SUM(cost)`，避免按 `expense_description` 明细分组。
+- `task_218`：`AvgScrRead` 被识别为已有指标列，lowest 排序要求排除 NULL。
+- `task_257`：输出契约包含 `ViewCount` 和 `DisplayName` 两个 value slot，并优先 last editor join。
+- `task_415`：输出契约包含 `constructorRef` 和 `url`，避免只输出 constructor reference。
+
+### 边界
+
+- `answer_contract` 是计划和校验辅助，不直接替模型生成答案。
+- header 大小写、列顺序不作为 scoring-critical 逻辑；真正关注的是数据行 value vector 是否完整。
+- 规则不绑定 task id，不读取 public gold。
+- 对低置信字段映射只提示验证，不强行覆盖执行路径。
