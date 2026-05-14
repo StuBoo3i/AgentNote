@@ -8,144 +8,123 @@
 
 ## 为什么修改
 
-新增 Task Context Pack 后，需要把 pack 接入 LangGraph 的运行状态、planning prompt、ReAct prompt、metadata 和 answer validation。
+当前失败分析显示，很多任务不是单纯算错，而是模型在 plan 阶段没有锁定最终答案契约：
 
-原流程只有：
+- 最终要输出哪些列没有明确。
+- 哪些表只用于过滤、哪些表用于最终投影没有分清。
+- 跨 CSV/JSON/DB 的 join 没有在计划阶段确定。
+- 明明是聚合题，却在执行中返回明细行。
 
-```text
-context_profile
-context_summary
-high_level_plan
-```
-
-这些信息偏文件级摘要，不足以稳定表达：
-
-- 输出字段与过滤字段分别来自哪里。
-- 哪些数据源只用于过滤，不能投影为最终答案。
-- 跨源时应使用哪些 join key。
-- answer 前应检查哪些结构化约束。
-
-因此修改 `langgraph_agent.py`，让 Context Pack 成为 LangGraph 执行链中的一等上下文。
+因此这次修改把 unified SQLite DB 接入 LangGraph 的 profile、planning、ReAct 三个阶段，让模型在正式执行前看到统一结构化查询入口，并被提示优先用 SQL 完成 join/filter/aggregation/final projection。
 
 ## 修改成了什么运行逻辑
 
-### 1. 配置扩展
-
-`LangGraphAgentConfig` 新增：
+### 1. 引入 unified DB 构建器
 
 ```python
-enable_context_pack: bool = True
-context_pack_char_budget: int = 8000
+from data_agent_baseline.tools.unified_db import build_unified_db
 ```
 
-用于控制是否构建 pack，以及注入 prompt 时的字符预算。
+### 2. profile_context 阶段预构建 unified DB
 
-### 2. State 扩展
-
-`AgentGraphState` 新增：
+在 `_node_profile_context()` 中新增：
 
 ```python
-task_context_pack: dict[str, Any]
+unified_db_profile = self._build_unified_db_profile(task)
+context_profile["unified_db"] = unified_db_profile
 ```
 
-initial state 中也加入空对象，保证整个图运行期间字段稳定存在。
+`_build_unified_db_profile()` 会调用：
 
-### 3. `profile_context` 节点构建 pack
+```python
+build_unified_db(task, force=True)
+```
 
-在 `_node_profile_context()` 中：
+这意味着每个 task 进入 LangGraph 后，会先把该 task 的 CSV/JSON/DB 转成一个临时统一 SQLite 文件，并生成简化 profile：
+
+```text
+available
+db_path
+scope
+source_files
+table_count
+tables
+join_candidates
+```
+
+使用 `force=True` 是为了避免同一路径下 public/debug 数据变化时误用旧缓存。
+
+### 3. unified DB 信息写入 bootstrap observation
+
+新增 observation：
+
+```text
+tool = inspect_unified_schema
+content = unified_db_profile
+```
+
+这会进入 trace，方便后续失败分析判断：
+
+- unified DB 是否成功构建。
+- 模型是否看到了统一 schema。
+- plan/ReAct 是否使用了对应工具。
+
+### 4. planning prompt 明确要求优先使用 unified SQL
+
+在 `_build_plan_messages()` 中增加约束：
+
+- 如果 `context_profile.unified_db.available = true`。
+- 且所需字段来自 CSV/JSON/DB。
+- 则优先计划使用 `inspect_unified_schema` 和 `execute_unified_sql`。
+- `doc/*.md` 和 `knowledge.md` 中的事实不能假装来自 unified DB。
+
+### 5. ReAct prompt 明确执行偏好
+
+在 `_build_messages()` 中增加：
+
+- CSV/JSON/DB 数据优先用 `execute_unified_sql`。
+- join、filter、aggregation、final columns 都应尽量在 SQL 中完成。
+- 最终答案仍要匹配 `source_map.output_field_sources` 和题目要求。
+
+## 对项目流程的影响
+
+修改前：
 
 ```text
 list_context
   -> inspect files
-  -> build context_summary
-  -> build_task_context_pack()
-  -> bootstrap observation: task_context_pack
-```
-
-如果 pack 构建失败，不中断任务，而是在 `pack_metadata.warnings` 中记录错误。
-
-### 4. planner prompt 使用 pack
-
-`_build_plan_messages()` 增加 `Task Context Pack` 区块，并要求 planner：
-
-- 使用 pack 作为 primary planning context。
-- 区分 output fields 和 filter fields。
-- 不要从 filter-only sources 投影最终答案列。
-- output/filter 来源不同时使用 pack 中的 join key。
-- 低置信度映射要先验证。
-
-高层 plan JSON 允许包含：
-
-```text
-source_mapping
-join_strategy
-```
-
-### 5. ReAct prompt 使用 pack
-
-`_build_messages()` 中将 pack 注入 system context，并明确：
-
-- `source_map.output_field_sources` 用于最终投影。
-- `source_map.filter_field_sources` 用于过滤。
-- `source_map.join_keys` 用于跨源 join。
-- 不要提交缺失的请求字段，不要用 None/null/unknown 填充。
-
-### 6. metadata 保留 pack
-
-最终 trace metadata 增加：
-
-```python
-"task_context_pack": final_state.get("task_context_pack", {})
-```
-
-这使后续报告和失败分析可以直接查看模型执行前的结构化判断。
-
-### 7. answer validation 增加 pack-aware warnings
-
-新增 `_context_pack_answer_warnings()`，在最终答案校验中增加轻量提示：
-
-- 题目期望字段数与答案列数不一致。
-- scalar 类问题返回了明细表。
-- 答案列疑似来自 filter-only source。
-- 答案 cell 中出现 None/null/unknown/missing 等 placeholder。
-
-默认不硬拒绝空字符串，因为公开 gold 中存在合法空单元格。
-
-## 对项目流程的影响
-
-修改后的 LangGraph 信息流：
-
-```text
-profile_context
-  -> context_profile
   -> context_summary
   -> task_context_pack
-  -> skill_recommender
-  -> build_plan
-  -> plan_action
-  -> execute_action
-  -> validate_answer
+  -> plan
+  -> ReAct tool loop
 ```
 
-这不是新增图节点，而是在原有节点中增强结构化上下文。
+修改后：
 
-## 对任务执行的改善
+```text
+list_context
+  -> inspect files
+  -> build unified SQLite DB
+  -> context_profile.unified_db
+  -> context_summary
+  -> task_context_pack(data_profile.unified_db)
+  -> plan sees unified schema
+  -> ReAct can call inspect_unified_schema / execute_unified_sql
+```
 
-对 `task_11` 的直接改善：
+没有新增 LangGraph 节点，也没有新增 LLM 调用。新增的是 deterministic preprocessing 和两个可调用工具。
 
-- `profile_context` 阶段即判断最终字段来自 `Patient`。
-- `Examination` 被标记为 `filter_only_sources`。
-- planner/ReAct 都能看到 `Examination.ID = Patient.ID` 的 inner join 提示。
-- 最终答案从 18 行过召回变为 3 行正确患者记录。
+## 对任务执行改善了什么
 
-全量 benchmark 中：
+主要改善：
 
-- `task_11` 完全正确。
-- 官方 column-signature 达到 `29/50 = 58.00%`。
-- `new_evaluation.py` relaxed content 达到 `29/50 = 58.00%`。
+- 跨源 join：例如 `csv_qualifying.driverid = json_drivers.driverid`，plan 阶段可直接看到 high-confidence join。
+- 大表聚合：例如百万行 CSV 可以进入 SQLite 后用 SQL `COUNT/SUM/GROUP BY`，避免 Python 预览样本误算。
+- 输出列裁剪：SQL projection 可以只选择 gold 需要的列，减少多输出冗余列。
+- trace 可解释性：trace 中会记录 unified DB profile，后续能判断失败是“没看懂题意”还是“看懂但没用正确 SQL 执行”。
 
-## 注意事项
+## 风险和边界
 
-- answer validation 当前主要给 warnings，不会强制重试或自动修复。
-- 如果 pack 判断错误，模型仍可根据后续 tool observations 修正。
-- pack 注入增加 prompt 长度，因此通过 `context_pack_char_budget` 控制预算。
+- 构建 unified DB 会增加每个 task 的预处理时间，尤其大 CSV/DB 任务。
+- unified DB 只覆盖 CSV/JSON/DB；文档型事实仍必须读取 `knowledge.md` 或 `doc/*.md`。
+- prompt 只是强约束偏好，模型仍可能选择 Python，因此后续可继续增加 answer 前 repair/fallback。

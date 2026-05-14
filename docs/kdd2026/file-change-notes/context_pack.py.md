@@ -1,4 +1,4 @@
-# context_pack.py 新增说明
+# context_pack.py 修改说明
 
 ## 对应文件
 
@@ -6,35 +6,38 @@
 /nfsdat/home/jwangslm/DataAnalysis/src/data_agent_baseline/agents/context_pack.py
 ```
 
-## 为什么新增
+## 为什么修改
 
-原 LangGraph `profile_context` 阶段主要输出文件级摘要，例如文件路径、列名、少量 sample rows、knowledge snippet。它缺少题目级结构化判断：
+失败任务分析中反复出现两类问题：
 
-- 题目要求的是 list/count/average/ratio 还是其他操作。
-- 最终输出字段应该来自哪个表。
-- 过滤条件应该来自哪个表。
-- `knowledge.md` 中哪些定义和枚举与当前题目有关。
-- 多表之间应该怎样 join。
-- 最终答案提交前应该检查什么。
+- 模型没有在 plan 阶段明确最终答案契约：要输出哪些列、按什么粒度输出、哪些字段只是过滤条件。
+- 多源结构化数据需要 join/filter/aggregation 时，模型容易在 CSV、JSON、DB 之间手写 Python 拼接，导致字段来源混淆、漏 join、聚合错误或多输出冗余列。
 
-这会导致模型在跨源任务中混用字段来源。例如 `task_11` 中，过滤条件在 `Examination.Thrombosis`，但最终答案字段 `SEX` 和患者级 `Diagnosis` 应来自 `Patient`。旧流程容易把 `Examination` 中满足过滤条件但没有 `Patient` 记录的 ID 也输出。
-
-因此新增 deterministic Task Context Pack，作为 planning 和 ReAct 的结构化上下文压缩层。
+原 `context_pack.py` 已经负责 deterministic Task Context Pack，但这次新增 unified SQLite 后，Context Pack 需要把 unified DB 的结构化索引也纳入 `data_profile`，让 planner 能在题意解析阶段看到统一 SQL 查询入口。
 
 ## 修改成了什么运行逻辑
 
-文件核心入口：
+本次修改点很小但位置关键：
 
 ```python
-build_task_context_pack(
-    task,
-    context_profile,
-    file_summaries,
-    context_root,
-)
+unified_db_profile = context_profile.get("unified_db")
+if isinstance(unified_db_profile, dict):
+    data_profile["unified_db"] = unified_db_profile
 ```
 
-输出固定 JSON 结构：
+新的运行链路变为：
+
+```text
+LangGraph profile_context
+  -> 构建 context_profile
+  -> 构建 unified_db_profile
+  -> context_profile["unified_db"] = unified_db_profile
+  -> build_task_context_pack()
+  -> data_profile["unified_db"] = unified_db_profile
+  -> question_intent / source_map / execution_plan / validation_checks
+```
+
+Context Pack 仍然输出固定结构：
 
 ```text
 question_intent
@@ -46,86 +49,38 @@ validation_checks
 pack_metadata
 ```
 
-主要内部逻辑：
+其中 `data_profile.unified_db` 新增包含：
 
-1. `infer_question_intent()`
-   - 根据题目触发词判断操作类型：list、count、average、sum、percentage、ratio、min/max 等。
-   - 推断目标实体、答案粒度和答案类型。
-
-2. `profile_structured_sources()`
-   - 对 CSV/TSV、JSON、SQLite 做有界 profiling。
-   - 提取表名、字段、类型、样本值、row_count、主键候选。
-   - 大 JSON 不做深度全量解析，避免扫描百 MB 文件。
-   - 大 SQLite 跳过昂贵 row count，保留 schema 和 sample rows。
-
-3. `extract_relevant_knowledge_facts()`
-   - 读取 `knowledge.md`。
-   - 按 heading/段落切块。
-   - 用题目词、字段词做关键词重叠打分。
-   - 保留 top-k 相关片段。
-
-4. `link_question_to_schema()`
-   - 将题目中的字段需求映射到真实表字段。
-   - 明确区分：
-     - `output_field_sources`
-     - `filter_field_sources`
-     - `filter_only_sources`
-
-5. `infer_join_keys()`
-   - 根据同名/规范化同名字段、样本值重叠推断 join key。
-
-6. `build_execution_plan()` 和 `build_validation_checks()`
-   - 生成给 planner/ReAct 使用的执行提示和 answer 前校验提示。
+- `available`：是否成功构建统一 DB。
+- `db_path`：临时 unified SQLite 路径。
+- `source_files`：被导入的 CSV/JSON/DB 文件。
+- `tables`：统一表名、字段、类型、样本值、行数。
+- `join_candidates`：基于 id-like 字段和样本值重叠推断的 join 候选。
+- `scope`：明确只包含 CSV/JSON/DB，不包含 `doc/*.md` 和 `knowledge.md`。
 
 ## 对项目流程的影响
 
-新增后 LangGraph 流程变为：
+`context_pack.py` 没有新增 LLM 调用，也没有改变 LangGraph 图结构。它只是把 profile 阶段已经构建好的 unified DB 信息继续传入 Task Context Pack。
 
-```text
-profile_context
-  -> 构建 context_summary
-  -> 构建 task_context_pack
-  -> build_plan 使用 task_context_pack
-  -> ReAct 使用 task_context_pack
-  -> validate_answer 使用 task_context_pack 生成 warnings
-```
+影响点在 plan 阶段：
 
-它没有改变图拓扑，也没有新增 LLM 调用，属于 deterministic preprocessing。
+- planner 不再只看到散落的文件摘要，还能看到一个统一的 SQL schema。
+- `source_map`、`execution_plan` 可以围绕 `execute_unified_sql` 组织，而不是默认走 Python 拼接。
+- 对跨 CSV/JSON/DB 的任务，join key 候选会出现在同一份 pack 里。
 
-## 对任务执行的改善
+## 对任务执行改善了什么
 
-以 `task_11` 为例，pack 生成的核心判断是：
+直接改善的问题类型：
 
-```json
-{
-  "output_field_sources": {
-    "ID": "Patient.ID",
-    "SEX": "Patient.SEX",
-    "Diagnosis": "Patient.Diagnosis"
-  },
-  "filter_field_sources": {
-    "Thrombosis": "Examination.Thrombosis"
-  },
-  "join_keys": [
-    {
-      "left": "Examination.ID",
-      "right": "Patient.ID",
-      "confidence": "high"
-    }
-  ],
-  "filter_only_sources": ["Examination"]
-}
-```
+- 多表 join 任务：提前暴露 `join_candidates`，降低漏 join 和错 join。
+- 聚合任务：统一 DB 支持 `GROUP BY`、`SUM`、`COUNT`、`AVG`，减少模型手写循环聚合错误。
+- 输出契约：Context Pack 可以同时看到题目意图、字段映射和统一 schema，更容易约束最终列数与行粒度。
+- filter-only 字段：过滤字段可通过 SQL `WHERE` 使用，但不会被误当成最终输出列。
 
-这直接改善了：
+对失败分析中的任务，主要针对 `task_38`、`task_80` 这类跨 CSV/JSON 关联任务，以及含 DB/CSV 混合查询的任务，减少“读懂题意但执行链路拼错”的失败。
 
-- 字段来源混淆。
-- 过滤表误投影为答案表。
-- 跨表 join 漏做或 join 方向错误。
-- answer 前缺少列数、粒度、缺失值检查。
+## 边界
 
-## 风险和边界
-
-- 当前是规则式 deterministic v1，不保证所有自然语言题意都能完美解析。
-- 大文件 profiling 为了安全会跳过深层全量扫描，因此某些字段映射可能低置信度。
-- 它负责“压缩和提示”，不是最终执行器；最终计算仍由模型和工具完成。
+- `context_pack.py` 不负责构建 unified DB，只消费 `context_profile["unified_db"]`。
+- Markdown/knowledge 文件不会进入 unified DB，仍由原文档读取和 knowledge facts 逻辑处理。
+- 如果 unified DB 构建失败，Context Pack 仍可退回原有结构化 source profiling。
