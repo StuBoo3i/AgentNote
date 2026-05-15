@@ -1,0 +1,1991 @@
+diff --git a/AgentParam.yaml b/AgentParam.yaml
+index 72aa446..2a660f2 100644
+--- a/AgentParam.yaml
++++ b/AgentParam.yaml
+@@ -26,6 +26,8 @@ langgraph:
+   require_supported_answer: false
+   enable_context_pack: true
+   context_pack_char_budget: 8000
++  prompt_memory_mode: compact_state  # compact_state | full_history
++  prompt_system_mode: minimal  # minimal | legacy
+   prompt_total_char_budget: 48000
+   prompt_recent_step_count: 4
+   prompt_max_bootstrap_observations: 10
+@@ -33,6 +35,16 @@ langgraph:
+ tools:
+   execute_python_timeout_seconds: 30
+ 
++skills:
++  enabled: true
++  include_builtin_library: true
++  recursive_discovery: true
++  max_recommendations: 6
++  script_timeout_seconds: 120
++  source_dirs:
++    - src/data_agent_baseline/skills
++    - skills
++
+ run:
+   task_timeout_seconds: 600
+   max_workers: 4
+diff --git a/src/data_agent_baseline/agents/langgraph_agent.py b/src/data_agent_baseline/agents/langgraph_agent.py
+index eebf03b..08dff9e 100644
+--- a/src/data_agent_baseline/agents/langgraph_agent.py
++++ b/src/data_agent_baseline/agents/langgraph_agent.py
+@@ -20,13 +20,14 @@ from data_agent_baseline.agents.prompt import (
+     build_observation_prompt,
+     build_system_prompt,
+     build_task_prompt,
++    build_tool_spec_prompt,
+ )
+ from data_agent_baseline.agents.react import _has_multiple_answer_slots, guard_answer_action_input, parse_model_step
+ from data_agent_baseline.agents.runtime import AgentRunResult, StepRecord, utc_now_iso
++from data_agent_baseline.agents.skill_middleware import SkillsMiddleware, create_skills_middleware
+ from data_agent_baseline.agents.skills import (
+     SkillDefinition,
+     build_context_profile,
+-    recommend_skills,
+     render_skills_for_prompt,
+ )
+ from data_agent_baseline.benchmark.schema import AnswerTable, PublicTask
+@@ -48,6 +49,29 @@ _SINGLE_VALUE_PREFIXES = (
+     "provide the ",
+     "identify the ",
+ )
++_PROMPT_MEMORY_MODES = {"full_history", "compact_state"}
++_PROMPT_SYSTEM_MODES = {"minimal", "legacy"}
++_WORKING_MEMORY_COMPLETED_LIMIT = 8
++_WORKING_MEMORY_FAILED_LIMIT = 6
++_WORKING_MEMORY_VARIABLE_LIMIT = 10
++_WORKING_MEMORY_PREVIEW_ROWS = 5
++_WORKING_MEMORY_PREVIEW_CHARS = 320
++_WORKING_MEMORY_ACTION_INPUT_CHARS = 800
++
++
++class WorkingMemory(TypedDict):
++    task_question: str
++    context_schema_summary: dict[str, Any]
++    answer_contract: dict[str, Any]
++    current_plan: dict[str, Any]
++    completed_steps: list[dict[str, Any]]
++    failed_steps: list[dict[str, Any]]
++    known_variables: list[dict[str, Any]]
++    latest_observation: dict[str, Any]
++    current_goal: str
++    warnings: list[str]
++    errors: list[str]
++    repair_state: dict[str, Any]
+ 
+ 
+ @dataclass(frozen=True, slots=True)
+@@ -65,9 +89,16 @@ class LangGraphAgentConfig:
+     require_supported_answer: bool = False
+     enable_context_pack: bool = True
+     context_pack_char_budget: int = 8000
++    prompt_memory_mode: str = "compact_state"
++    prompt_system_mode: str = "minimal"
+     prompt_total_char_budget: int = 48000
+     prompt_recent_step_count: int = 4
+     prompt_max_bootstrap_observations: int = 4
++    skill_enabled: bool = True
++    skill_source_dirs: tuple[Path, ...] = ()
++    skill_recursive_discovery: bool = True
++    skill_include_builtin: bool = True
++    skill_max_recommendations: int = 6
+ 
+ 
+ class AgentGraphState(TypedDict):
+@@ -86,6 +117,7 @@ class AgentGraphState(TypedDict):
+     high_level_plan: dict[str, Any]
+     high_level_plan_raw: str
+     plan_generation_error: str | None
++    working_memory: WorkingMemory
+     answer_validation: dict[str, Any]
+     pending_raw_response: str
+     pending_step_started_at_utc: str
+@@ -288,6 +320,34 @@ def _last_sql_action(steps: list[StepRecord]) -> str:
+     return ""
+ 
+ 
++def _normalize_prompt_memory_mode(raw_value: str) -> str:
++    normalized = str(raw_value).strip().lower()
++    if normalized in _PROMPT_MEMORY_MODES:
++        return normalized
++    raise ValueError("prompt_memory_mode must be one of: full_history, compact_state.")
++
++
++def _normalize_prompt_system_mode(raw_value: str) -> str:
++    normalized = str(raw_value).strip().lower()
++    if normalized in _PROMPT_SYSTEM_MODES:
++        return normalized
++    raise ValueError("prompt_system_mode must be one of: minimal, legacy.")
++
++
++def _truncate_value(value: Any, *, max_chars: int) -> str:
++    text = str(value)
++    if max_chars <= 0 or len(text) <= max_chars:
++        return text
++    return f"{text[:max_chars]}...<truncated {len(text) - max_chars} chars>"
++
++
++def _as_int(value: Any, default: int = 0) -> int:
++    try:
++        return int(value)
++    except Exception:  # noqa: BLE001
++        return default
++
++
+ class LangGraphReActAgent:
+     def __init__(
+         self,
+@@ -300,7 +360,17 @@ class LangGraphReActAgent:
+         self.model = model
+         self.tools = tools
+         self.config = config or LangGraphAgentConfig()
++        self.prompt_memory_mode = _normalize_prompt_memory_mode(self.config.prompt_memory_mode)
++        self.prompt_system_mode = _normalize_prompt_system_mode(self.config.prompt_system_mode)
+         self.system_prompt = system_prompt or REACT_SYSTEM_PROMPT
++        self._skills_middleware: SkillsMiddleware = create_skills_middleware(
++            source_dirs=self.config.skill_source_dirs,
++            recursive_discovery=self.config.skill_recursive_discovery,
++            include_builtin_library=self.config.skill_include_builtin,
++            max_recommendations=self.config.skill_max_recommendations,
++        )
++        if self.config.skill_enabled:
++            self._skills_middleware.load_skills()
+         self._graph = self._build_graph()
+ 
+     def _build_graph(self):
+@@ -851,6 +921,549 @@ class LangGraphReActAgent:
+         )
+         return trimmed_messages
+ 
++    def _build_tool_spec_message(self) -> str:
++        action_schemas = {
++            str(action_name): dict(spec.input_schema) if isinstance(spec.input_schema, dict) else {}
++            for action_name, spec in self.tools.specs.items()
++        }
++        return build_tool_spec_prompt(action_schemas)
++
++    def _active_skill_briefs(self, skills: list[SkillDefinition]) -> list[dict[str, Any]]:
++        briefs: list[dict[str, Any]] = []
++        for skill in skills[:6]:
++            brief: dict[str, Any] = {
++                "name": skill.name,
++                "description": skill.description,
++            }
++            required_tools = getattr(skill, "required_tools", ())
++            if required_tools:
++                brief["required_tools"] = list(required_tools)[:8]
++            briefs.append(brief)
++        return briefs
++
++    def _empty_working_memory(self, task_question: str) -> WorkingMemory:
++        return {
++            "task_question": task_question,
++            "context_schema_summary": {},
++            "answer_contract": {},
++            "current_plan": {},
++            "completed_steps": [],
++            "failed_steps": [],
++            "known_variables": [],
++            "latest_observation": {},
++            "current_goal": "Inspect relevant context and move toward the final answer.",
++            "warnings": [],
++            "errors": [],
++            "repair_state": {
++                "failed_action": None,
++                "failed_action_input_summary": "",
++                "error_message": "",
++                "consecutive_failure_count": 0,
++                "repeated_failure": False,
++            },
++        }
++
++    def _compact_context_schema_summary(
++        self,
++        *,
++        context_profile: dict[str, Any],
++        context_summary: dict[str, Any],
++    ) -> dict[str, Any]:
++        file_summaries_raw = context_summary.get("file_summaries", [])
++        file_summaries = file_summaries_raw if isinstance(file_summaries_raw, list) else []
++        key_files: list[str] = []
++        sqlite_tables: list[str] = []
++        for item in file_summaries:
++            if not isinstance(item, dict):
++                continue
++            path = str(item.get("path", "")).strip()
++            if path:
++                key_files.append(path)
++            tables = item.get("tables", [])
++            if isinstance(tables, list):
++                for table in tables:
++                    if not isinstance(table, dict):
++                        continue
++                    table_name = str(table.get("name", "")).strip()
++                    if table_name:
++                        sqlite_tables.append(table_name)
++            if len(key_files) >= 12 and len(sqlite_tables) >= 12:
++                break
++
++        unified_db = context_profile.get("unified_db", {})
++        unified_summary: dict[str, Any] = {}
++        if isinstance(unified_db, dict):
++            unified_tables = []
++            for table in (unified_db.get("tables") or [])[:12]:
++                if not isinstance(table, dict):
++                    continue
++                columns = []
++                for column in (table.get("columns") or [])[:12]:
++                    if not isinstance(column, dict):
++                        continue
++                    columns.append(
++                        {
++                            "name": column.get("name"),
++                            "original_name": column.get("original_name"),
++                            "type": column.get("type"),
++                        }
++                    )
++                unified_tables.append(
++                    {
++                        "name": table.get("name"),
++                        "row_count": table.get("row_count"),
++                        "columns": columns,
++                    }
++                )
++            unified_summary = {
++                "available": unified_db.get("available"),
++                "table_count": unified_db.get("table_count"),
++                "tables": unified_tables,
++                "join_candidates": (unified_db.get("join_candidates") or [])[:24],
++            }
++
++        knowledge_summary = context_summary.get("knowledge_summary", {})
++        knowledge_headings: list[str] = []
++        if isinstance(knowledge_summary, dict):
++            headings = knowledge_summary.get("headings", [])
++            if isinstance(headings, list):
++                knowledge_headings = [str(item).strip() for item in headings if str(item).strip()][:12]
++
++        extension_counts = context_profile.get("extension_counts", {})
++        return {
++            "file_count": _as_int(context_profile.get("file_count"), default=0),
++            "directory_count": _as_int(context_profile.get("directory_count"), default=0),
++            "extension_counts": extension_counts if isinstance(extension_counts, dict) else {},
++            "inspected_file_count": _as_int(context_summary.get("inspected_file_count"), default=len(file_summaries)),
++            "key_files": key_files[:12],
++            "sqlite_tables": sqlite_tables[:12],
++            "knowledge_headings": knowledge_headings,
++            "unified_db": unified_summary,
++        }
++
++    def _compact_answer_contract(self, task_context_pack: dict[str, Any]) -> dict[str, Any]:
++        answer_contract = task_context_pack.get("answer_contract", {})
++        if not isinstance(answer_contract, dict):
++            return {}
++        return {
++            "expected_columns": answer_contract.get("expected_columns", []),
++            "row_grain": answer_contract.get("row_grain"),
++            "metric_grain": answer_contract.get("metric_grain"),
++            "filters": answer_contract.get("filters", []),
++            "sort": answer_contract.get("sort", {}),
++            "joins": (answer_contract.get("joins") or [])[:12],
++            "match_policies": answer_contract.get("match_policies", []),
++            "warnings": answer_contract.get("warnings", []),
++            "scoring_note": answer_contract.get("scoring_note"),
++        }
++
++    def _compact_plan_summary(self, high_level_plan: dict[str, Any]) -> dict[str, Any]:
++        return {
++            "objective": str(high_level_plan.get("objective", "")).strip(),
++            "relevant_sources": _coerce_text_list(high_level_plan.get("relevant_sources"))[:12],
++            "execution_steps": _coerce_text_list(high_level_plan.get("execution_steps"))[:8],
++            "validation_checks": _coerce_text_list(high_level_plan.get("validation_checks"))[:8],
++            "answer_shape": high_level_plan.get("answer_shape", {}),
++            "source_mapping": high_level_plan.get("source_mapping", {}),
++            "join_strategy": high_level_plan.get("join_strategy", {}),
++        }
++
++    def _current_goal_from_plan(self, high_level_plan: dict[str, Any]) -> str:
++        execution_steps = _coerce_text_list(high_level_plan.get("execution_steps"))
++        if execution_steps:
++            return execution_steps[0]
++        objective = str(high_level_plan.get("objective", "")).strip()
++        if objective:
++            return objective
++        return "Inspect relevant context and move toward the final answer."
++
++    def _build_compact_state_message(self, state: AgentGraphState) -> str:
++        task = state["task"]
++        working_memory = state.get("working_memory", self._empty_working_memory(task.question))
++        compact_payload = {
++            "task_question": str(working_memory.get("task_question", task.question)),
++            "context_schema_summary": working_memory.get("context_schema_summary", {}),
++            "answer_contract": working_memory.get("answer_contract", {}),
++            "current_plan": working_memory.get("current_plan", {}),
++            "completed_steps": working_memory.get("completed_steps", []),
++            "failed_steps": working_memory.get("failed_steps", []),
++            "known_variables": working_memory.get("known_variables", []),
++            "latest_observation": working_memory.get("latest_observation", {}),
++            "current_goal": working_memory.get("current_goal", ""),
++            "warnings": working_memory.get("warnings", []),
++            "errors": working_memory.get("errors", []),
++            "repair_state": working_memory.get("repair_state", {}),
++            "active_skills": self._active_skill_briefs(state.get("skill_definitions", [])),
++        }
++        return (
++            "Compact trusted state:\n"
++            f"{_render_json_for_prompt(compact_payload, max_chars=max(self.config.execution_context_char_budget * 3, 2400))}\n\n"
++            "Use this state as the primary memory for the next action. Full trace is stored separately; "
++            "do not ask to reread prior observations unless the compact state says key details are missing."
++        )
++
++    def _build_current_goal_message(self, state: AgentGraphState) -> str:
++        task = state["task"]
++        working_memory = state.get("working_memory", self._empty_working_memory(task.question))
++        goal = str(working_memory.get("current_goal", "")).strip()
++        if not goal:
++            goal = "Inspect relevant context and move toward the final answer."
++        return (
++            "Current goal:\n"
++            f"{goal}\n\n"
++            "Prioritize the latest observation, answer_contract, and repair_state when selecting the next tool action."
++        )
++
++    def _base_execution_system_content(self) -> str:
++        tool_descriptions = self.tools.describe_for_prompt() if self.prompt_system_mode == "legacy" else ""
++        return build_system_prompt(
++            tool_descriptions,
++            system_prompt=None if self.prompt_system_mode == "minimal" else self.system_prompt,
++            mode=self.prompt_system_mode,
++        )
++
++    def _build_base_execution_messages(self, state: AgentGraphState) -> list[ModelMessage]:
++        task = state["task"]
++        return [
++            ModelMessage(role="system", content=self._base_execution_system_content()),
++            ModelMessage(role="user", content=build_task_prompt(task)),
++            ModelMessage(role="user", content=self._build_tool_spec_message()),
++            ModelMessage(role="user", content=self._build_compact_state_message(state)),
++            ModelMessage(role="user", content=self._build_current_goal_message(state)),
++        ]
++
++    def _summarize_action_input(self, action_input: dict[str, Any]) -> str:
++        try:
++            rendered = json.dumps(action_input, ensure_ascii=False, sort_keys=True)
++        except Exception:  # noqa: BLE001
++            rendered = str(action_input)
++        return _truncate_value(rendered, max_chars=_WORKING_MEMORY_ACTION_INPUT_CHARS)
++
++    def _sanitize_preview_cell(self, value: Any) -> Any:
++        if value is None or isinstance(value, (bool, int, float)):
++            return value
++        return _truncate_value(value, max_chars=120)
++
++    def _preview_rows(self, rows_raw: Any) -> list[list[Any]]:
++        if not isinstance(rows_raw, list):
++            return []
++        preview_rows: list[list[Any]] = []
++        for row in rows_raw:
++            if not isinstance(row, list):
++                continue
++            preview_rows.append([self._sanitize_preview_cell(cell) for cell in row])
++            if len(preview_rows) >= _WORKING_MEMORY_PREVIEW_ROWS:
++                break
++        return preview_rows
++
++    def _summarize_tabular_content(self, content: dict[str, Any]) -> dict[str, Any]:
++        columns_raw = content.get("columns", [])
++        rows_raw = content.get("rows", [])
++        columns = [str(item) for item in columns_raw if isinstance(item, str)][:30] if isinstance(columns_raw, list) else []
++        row_count_default = len(rows_raw) if isinstance(rows_raw, list) else 0
++        preview_rows = self._preview_rows(rows_raw)
++        truncated = bool(content.get("truncated", False))
++        if isinstance(rows_raw, list) and len(rows_raw) > len(preview_rows):
++            truncated = True
++        return {
++            "columns": columns,
++            "row_count": _as_int(content.get("row_count"), default=row_count_default),
++            "preview_rows": preview_rows,
++            "truncated": truncated,
++        }
++
++    def _summarize_observation(self, observation: dict[str, Any]) -> dict[str, Any]:
++        tool = str(observation.get("tool", "")).strip() or "<unknown>"
++        ok = bool(observation.get("ok", False))
++        summary: dict[str, Any] = {"ok": ok, "tool": tool}
++        content = observation.get("content")
++        if not ok:
++            error_text = str(observation.get("error", "")).strip()
++            if not error_text and isinstance(content, dict):
++                for key in ("error", "stderr", "message", "traceback"):
++                    candidate = str(content.get(key, "")).strip()
++                    if candidate:
++                        error_text = candidate
++                        break
++            summary["summary_type"] = "error"
++            summary["error_summary"] = _truncate_value(error_text or "Tool execution failed.", max_chars=360)
++            for key in ("error_type", "repair_hint", "repairable"):
++                if key in observation:
++                    summary[key] = observation[key]
++            return summary
++
++        if not isinstance(content, dict):
++            summary["summary_type"] = "value"
++            summary["value_preview"] = _truncate_value(content, max_chars=_WORKING_MEMORY_PREVIEW_CHARS)
++            return summary
++
++        if tool in {"read_csv", "execute_context_sql", "execute_unified_sql", "execute_logical_query"}:
++            summary["summary_type"] = "tabular"
++            summary.update(self._summarize_tabular_content(content))
++            if "path" in content:
++                summary["path"] = str(content.get("path", ""))
++            return summary
++
++        if tool == "run_controlled_query_pipeline":
++            summary["summary_type"] = "controlled_pipeline"
++            execution = content.get("execution", {})
++            if isinstance(execution, dict):
++                summary["execution"] = self._summarize_tabular_content(execution)
++            validation = content.get("validation", {})
++            if isinstance(validation, dict):
++                summary["validation"] = {
++                    "ok": bool(validation.get("ok", False)),
++                    "errors": [str(item) for item in validation.get("errors", [])][:5]
++                    if isinstance(validation.get("errors"), list)
++                    else [],
++                    "warnings": [str(item) for item in validation.get("warnings", [])][:5]
++                    if isinstance(validation.get("warnings"), list)
++                    else [],
++                }
++            return summary
++
++        if tool == "read_json":
++            summary["summary_type"] = "json_preview"
++            summary["path"] = str(content.get("path", ""))
++            summary["truncated"] = bool(content.get("truncated", False))
++            summary["fully_parsed"] = bool(content.get("fully_parsed", False))
++            summary["preview"] = _truncate_value(content.get("preview", ""), max_chars=_WORKING_MEMORY_PREVIEW_CHARS)
++            return summary
++
++        if tool == "read_doc":
++            summary["summary_type"] = "document_preview"
++            summary["path"] = str(content.get("path", ""))
++            summary["truncated"] = bool(content.get("truncated", False))
++            summary["preview"] = _truncate_value(content.get("preview", ""), max_chars=_WORKING_MEMORY_PREVIEW_CHARS)
++            return summary
++
++        if tool == "execute_python":
++            summary["summary_type"] = "python_exec"
++            summary["success"] = bool(content.get("success", True))
++            summary["output_preview"] = _truncate_value(content.get("output", ""), max_chars=_WORKING_MEMORY_PREVIEW_CHARS)
++            summary["stderr_preview"] = _truncate_value(content.get("stderr", ""), max_chars=_WORKING_MEMORY_PREVIEW_CHARS)
++            if content.get("error"):
++                summary["error_summary"] = _truncate_value(content.get("error", ""), max_chars=240)
++            return summary
++
++        if tool == "answer":
++            summary["summary_type"] = "answer"
++            summary["status"] = str(content.get("status", "submitted"))
++            summary["column_count"] = _as_int(content.get("column_count"), default=0)
++            summary["row_count"] = _as_int(content.get("row_count"), default=0)
++            return summary
++
++        if tool == "inspect_sqlite_schema":
++            tables_raw = content.get("tables", [])
++            table_names: list[str] = []
++            if isinstance(tables_raw, list):
++                for table in tables_raw:
++                    if not isinstance(table, dict):
++                        continue
++                    name = str(table.get("name", "")).strip()
++                    if name:
++                        table_names.append(name)
++                    if len(table_names) >= 15:
++                        break
++            summary["summary_type"] = "sqlite_schema"
++            summary["path"] = str(content.get("path", ""))
++            summary["table_count"] = len(table_names)
++            summary["tables"] = table_names
++            return summary
++
++        if tool == "inspect_unified_schema":
++            tables_raw = content.get("tables", [])
++            table_names: list[str] = []
++            if isinstance(tables_raw, list):
++                for table in tables_raw[:20]:
++                    if isinstance(table, dict) and table.get("name"):
++                        table_names.append(str(table["name"]))
++            summary["summary_type"] = "unified_schema"
++            summary["available"] = bool(content.get("available", True))
++            summary["table_count"] = _as_int(content.get("table_count"), default=len(table_names))
++            summary["tables"] = table_names
++            summary["join_candidates"] = (content.get("join_candidates") or [])[:20]
++            return summary
++
++        if tool == "list_context":
++            entries_raw = content.get("entries", [])
++            preview_paths: list[str] = []
++            entry_count = len(entries_raw) if isinstance(entries_raw, list) else 0
++            if isinstance(entries_raw, list):
++                for item in entries_raw[:10]:
++                    if isinstance(item, dict) and item.get("path"):
++                        preview_paths.append(str(item["path"]))
++            summary["summary_type"] = "context_tree"
++            summary["entry_count"] = entry_count
++            summary["preview_paths"] = preview_paths
++            summary["truncated"] = entry_count > len(preview_paths)
++            return summary
++
++        if isinstance(content.get("rows"), list) and isinstance(content.get("columns"), list):
++            summary["summary_type"] = "tabular"
++            summary.update(self._summarize_tabular_content(content))
++            return summary
++
++        summary["summary_type"] = "object"
++        summary["keys"] = list(content.keys())[:15]
++        return summary
++
++    def _extract_known_variables(self, *, action: str, content: Any) -> list[dict[str, Any]]:
++        if not isinstance(content, dict):
++            return []
++        variables: list[dict[str, Any]] = []
++        for key, value in content.items():
++            name = str(key).strip()
++            if not name:
++                continue
++            if name.lower() in {"rows", "preview", "stderr", "output", "traceback", "sql", "create_sql"}:
++                continue
++            if isinstance(value, list) and value and all(not isinstance(item, (dict, list)) for item in value):
++                variables.append(
++                    {
++                        "name": name,
++                        "summary": f"{len(value)} values stored",
++                        "preview": [self._sanitize_preview_cell(item) for item in value[:_WORKING_MEMORY_PREVIEW_ROWS]],
++                        "source_tool": action,
++                    }
++                )
++            elif isinstance(value, dict) and len(value) <= 8:
++                variables.append(
++                    {
++                        "name": name,
++                        "summary": "object stored",
++                        "keys": list(value.keys())[:8],
++                        "source_tool": action,
++                    }
++                )
++            if len(variables) >= 4:
++                break
++        return variables
++
++    def _merge_known_variables(
++        self,
++        existing_variables: list[dict[str, Any]],
++        new_variables: list[dict[str, Any]],
++    ) -> list[dict[str, Any]]:
++        merged: list[dict[str, Any]] = []
++        seen: set[str] = set()
++        for item in list(new_variables) + list(existing_variables):
++            if not isinstance(item, dict):
++                continue
++            name = str(item.get("name", "")).strip()
++            if not name or name in seen:
++                continue
++            seen.add(name)
++            merged.append(item)
++            if len(merged) >= _WORKING_MEMORY_VARIABLE_LIMIT:
++                break
++        return merged
++
++    def _step_memory_entry(
++        self,
++        *,
++        step: StepRecord,
++        observation_summary: dict[str, Any],
++    ) -> dict[str, Any]:
++        return {
++            "step_index": step.step_index,
++            "action": step.action,
++            "ok": step.ok,
++            "action_input_summary": self._summarize_action_input(step.action_input),
++            "observation_summary": observation_summary,
++        }
++
++    def _initialize_working_memory(
++        self,
++        *,
++        state: AgentGraphState,
++        high_level_plan: dict[str, Any],
++        plan_generation_error: str | None,
++    ) -> WorkingMemory:
++        working_memory = self._empty_working_memory(state["task"].question)
++        working_memory["context_schema_summary"] = self._compact_context_schema_summary(
++            context_profile=state.get("context_profile", {}),
++            context_summary=state.get("context_summary", {}),
++        )
++        working_memory["answer_contract"] = self._compact_answer_contract(state.get("task_context_pack", {}))
++        working_memory["current_plan"] = self._compact_plan_summary(high_level_plan)
++        working_memory["current_goal"] = self._current_goal_from_plan(high_level_plan)
++        working_memory["latest_observation"] = {
++            "ok": plan_generation_error is None,
++            "tool": "high_level_plan",
++            "summary_type": "planning",
++            "objective": str(high_level_plan.get("objective", "")).strip(),
++            "execution_step_count": len(_coerce_text_list(high_level_plan.get("execution_steps"))),
++            "parse_error": plan_generation_error,
++        }
++        if plan_generation_error:
++            working_memory["warnings"].append(f"Plan generation fallback used: {plan_generation_error}")
++        return working_memory
++
++    def _update_working_memory_after_step(
++        self,
++        *,
++        state: AgentGraphState,
++        step: StepRecord,
++    ) -> WorkingMemory:
++        current = state.get("working_memory", self._empty_working_memory(state["task"].question))
++        working_memory: WorkingMemory = {
++            "task_question": str(current.get("task_question", state["task"].question)),
++            "context_schema_summary": dict(current.get("context_schema_summary", {})),
++            "answer_contract": dict(current.get("answer_contract", {})),
++            "current_plan": dict(current.get("current_plan", {})),
++            "completed_steps": list(current.get("completed_steps", [])),
++            "failed_steps": list(current.get("failed_steps", [])),
++            "known_variables": list(current.get("known_variables", [])),
++            "latest_observation": dict(current.get("latest_observation", {})),
++            "current_goal": str(current.get("current_goal", "")),
++            "warnings": list(current.get("warnings", [])),
++            "errors": list(current.get("errors", [])),
++            "repair_state": dict(current.get("repair_state", {})),
++        }
++        observation_summary = self._summarize_observation(step.observation)
++        working_memory["latest_observation"] = observation_summary
++        repair_state = dict(working_memory.get("repair_state", {}))
++        if step.ok:
++            working_memory["completed_steps"].append(
++                self._step_memory_entry(step=step, observation_summary=observation_summary)
++            )
++            working_memory["completed_steps"] = working_memory["completed_steps"][-_WORKING_MEMORY_COMPLETED_LIMIT:]
++            extracted_variables = self._extract_known_variables(action=step.action, content=step.observation.get("content"))
++            if extracted_variables:
++                working_memory["known_variables"] = self._merge_known_variables(
++                    working_memory["known_variables"],
++                    extracted_variables,
++                )
++            repair_state["consecutive_failure_count"] = 0
++            repair_state["repeated_failure"] = False
++            working_memory["current_goal"] = (
++                "Validate and finalize the submitted answer."
++                if step.action == "answer"
++                else f"Based on latest observation from `{step.action}`, choose the next deterministic action."
++            )
++        else:
++            failed_entry = self._step_memory_entry(step=step, observation_summary=observation_summary)
++            working_memory["failed_steps"].append(failed_entry)
++            working_memory["failed_steps"] = working_memory["failed_steps"][-_WORKING_MEMORY_FAILED_LIMIT:]
++            previous_failed_action = str(repair_state.get("failed_action", "")).strip()
++            previous_count = _as_int(repair_state.get("consecutive_failure_count"), default=0)
++            error_summary = str(observation_summary.get("error_summary", "")).strip()
++            repair_state = {
++                "failed_action": step.action,
++                "failed_action_input_summary": self._summarize_action_input(step.action_input),
++                "error_message": error_summary,
++                "consecutive_failure_count": previous_count + 1,
++                "repeated_failure": previous_failed_action == step.action and previous_count >= 1,
++            }
++            working_memory["errors"].append(f"Step {step.step_index} failed on `{step.action}`: {error_summary}")
++            working_memory["errors"] = working_memory["errors"][-_WORKING_MEMORY_FAILED_LIMIT:]
++            working_memory["current_goal"] = (
++                f"Repair failed action `{step.action}` based on latest error and continue toward the final answer."
++            )
++        working_memory["repair_state"] = repair_state
++        return working_memory
++
+     def _build_plan_messages(self, state: AgentGraphState) -> list[ModelMessage]:
+         task = state["task"]
+         rendered_skills = render_skills_for_prompt(state["skill_definitions"])
+@@ -915,7 +1528,7 @@ class LangGraphReActAgent:
+             ModelMessage(role="user", content=user_prompt),
+         ]
+ 
+-    def _build_messages(self, state: AgentGraphState) -> list[ModelMessage]:
++    def _build_full_history_messages(self, state: AgentGraphState) -> list[ModelMessage]:
+         task = state["task"]
+         rendered_skills = render_skills_for_prompt(state["skill_definitions"])
+         context_profile = _render_json_for_prompt(
+@@ -1012,6 +1625,27 @@ class LangGraphReActAgent:
+         )
+         return self._trim_messages_to_budget(messages)
+ 
++    def _build_compact_state_messages(self, state: AgentGraphState) -> list[ModelMessage]:
++        messages = self._build_base_execution_messages(state)
++        messages = self._trim_messages_to_budget(messages)
++        budget_summary = _render_message_budget_summary(messages)
++        messages[0] = ModelMessage(
++            role="system",
++            content=(
++                f"{messages[0].content}\n\n"
++                "Prompt budget summary after trimming:\n"
++                f"{budget_summary}\n\n"
++                "Execution guidance: use task_context_pack.answer_contract from compact state when present; "
++                "prefer execute_unified_sql for CSV/JSON/DB joins, filters, aggregation, ordering, and final projection."
++            ),
++        )
++        return self._trim_messages_to_budget(messages)
++
++    def _build_messages(self, state: AgentGraphState) -> list[ModelMessage]:
++        if self.prompt_memory_mode == "compact_state":
++            return self._build_compact_state_messages(state)
++        return self._build_full_history_messages(state)
++
+     def _node_profile_context(self, state: AgentGraphState) -> dict[str, Any]:
+         task = state["task"]
+         bootstrap_observations: list[dict[str, Any]] = []
+@@ -1085,7 +1719,10 @@ class LangGraphReActAgent:
+                 }
+             )
+ 
+-        skills = recommend_skills(task.question, context_profile)
++        if self.config.skill_enabled:
++            skills = self._skills_middleware.match_skills(task.question, context_profile)
++        else:
++            skills = []
+         bootstrap_observations.append(
+             {
+                 "ok": True,
+@@ -1103,6 +1740,7 @@ class LangGraphReActAgent:
+             "task_snapshot": task_snapshot,
+             "skill_definitions": skills,
+             "bootstrap_observations": bootstrap_observations,
++            "working_memory": self._empty_working_memory(task.question),
+         }
+ 
+     def _build_unified_db_profile(self, task: PublicTask) -> dict[str, Any]:
+@@ -1148,21 +1786,45 @@ class LangGraphReActAgent:
+                 },
+             }
+         )
++        working_memory = self._initialize_working_memory(
++            state=state,
++            high_level_plan=high_level_plan,
++            plan_generation_error=plan_generation_error,
++        )
+         return {
+             "high_level_plan": high_level_plan,
+             "high_level_plan_raw": raw_plan_response,
+             "plan_generation_error": plan_generation_error,
+             "bootstrap_observations": bootstrap_observations,
++            "working_memory": working_memory,
+         }
+ 
+     def _node_plan_action(self, state: AgentGraphState) -> dict[str, Any]:
+         if state["step_index"] >= state["max_steps"]:
++            working_memory = state.get("working_memory", self._empty_working_memory(state["task"].question))
++            updated_working_memory: WorkingMemory = {
++                "task_question": str(working_memory.get("task_question", state["task"].question)),
++                "context_schema_summary": dict(working_memory.get("context_schema_summary", {})),
++                "answer_contract": dict(working_memory.get("answer_contract", {})),
++                "current_plan": dict(working_memory.get("current_plan", {})),
++                "completed_steps": list(working_memory.get("completed_steps", [])),
++                "failed_steps": list(working_memory.get("failed_steps", [])),
++                "known_variables": list(working_memory.get("known_variables", [])),
++                "latest_observation": dict(working_memory.get("latest_observation", {})),
++                "current_goal": "Stop: max_steps reached without a final answer.",
++                "warnings": list(working_memory.get("warnings", [])),
++                "errors": list(working_memory.get("errors", [])),
++                "repair_state": dict(working_memory.get("repair_state", {})),
++            }
++            updated_working_memory["errors"].append("Reached max_steps before submitting an answer.")
++            updated_working_memory["errors"] = updated_working_memory["errors"][-_WORKING_MEMORY_FAILED_LIMIT:]
+             return {
+                 "failure_reason": "Agent did not submit an answer within max_steps.",
+                 "pending_raw_response": "",
+                 "pending_step_started_at_utc": "",
+                 "pending_step_started_perf": 0.0,
+                 "pending_prompt_messages": [],
++                "working_memory": updated_working_memory,
+             }
+         step_started_perf = perf_counter()
+         step_started_at = utc_now_iso()
+@@ -1203,6 +1865,7 @@ class LangGraphReActAgent:
+         steps = list(state["steps"])
+         answer = state["answer"]
+         failure_reason = state["failure_reason"]
++        step_record: StepRecord | None = None
+ 
+         try:
+             model_step = parse_model_step(raw_response)
+@@ -1224,21 +1887,20 @@ class LangGraphReActAgent:
+                 "tool": model_step.action,
+                 "content": tool_result.content,
+             }
+-            steps.append(
+-                StepRecord(
+-                    step_index=step_index,
+-                    thought=model_step.thought,
+-                    action=model_step.action,
+-                    action_input=model_step.action_input,
+-                    raw_response=raw_response,
+-                    observation=observation,
+-                    ok=tool_result.ok,
+-                    started_at_utc=step_started_at,
+-                    completed_at_utc=utc_now_iso(),
+-                    elapsed_seconds=round(perf_counter() - step_started_perf, 3),
+-                    prompt_messages=prompt_messages,
+-                )
++            step_record = StepRecord(
++                step_index=step_index,
++                thought=model_step.thought,
++                action=model_step.action,
++                action_input=model_step.action_input,
++                raw_response=raw_response,
++                observation=observation,
++                ok=tool_result.ok,
++                started_at_utc=step_started_at,
++                completed_at_utc=utc_now_iso(),
++                elapsed_seconds=round(perf_counter() - step_started_perf, 3),
++                prompt_messages=prompt_messages,
+             )
++            steps.append(step_record)
+             if tool_result.is_terminal:
+                 answer = tool_result.answer
+         except Exception as exc:  # noqa: BLE001
+@@ -1246,24 +1908,62 @@ class LangGraphReActAgent:
+                 "ok": False,
+                 "error": str(exc),
+             }
+-            steps.append(
+-                StepRecord(
+-                    step_index=step_index,
+-                    thought="",
+-                    action="__error__",
+-                    action_input={},
+-                    raw_response=raw_response,
+-                    observation=observation,
+-                    ok=False,
+-                    started_at_utc=step_started_at,
+-                    completed_at_utc=utc_now_iso(),
+-                    elapsed_seconds=round(perf_counter() - step_started_perf, 3),
+-                    prompt_messages=prompt_messages,
+-                )
++            error_type = str(getattr(exc, "error_type", "")).strip()
++            if error_type:
++                observation["error_type"] = error_type
++            repair_hint = str(getattr(exc, "repair_hint", "")).strip()
++            if repair_hint:
++                observation["repair_hint"] = repair_hint
++            repairable = getattr(exc, "repairable", None)
++            if isinstance(repairable, bool):
++                observation["repairable"] = repairable
++            action = "__error__"
++            action_input: dict[str, Any] = {}
++            if "model_step" in locals():
++                action = str(getattr(model_step, "action", "__error__")) or "__error__"
++                raw_action_input = getattr(model_step, "action_input", {})
++                if isinstance(raw_action_input, dict):
++                    action_input = raw_action_input
++            observation["tool"] = action
++            step_record = StepRecord(
++                step_index=step_index,
++                thought="",
++                action=action,
++                action_input=action_input,
++                raw_response=raw_response,
++                observation=observation,
++                ok=False,
++                started_at_utc=step_started_at,
++                completed_at_utc=utc_now_iso(),
++                elapsed_seconds=round(perf_counter() - step_started_perf, 3),
++                prompt_messages=prompt_messages,
+             )
++            steps.append(step_record)
+             if step_index >= state["max_steps"]:
+                 failure_reason = "Agent did not submit an answer within max_steps."
+ 
++        working_memory = state.get("working_memory", self._empty_working_memory(state["task"].question))
++        if step_record is not None:
++            working_memory = self._update_working_memory_after_step(state=state, step=step_record)
++        if failure_reason:
++            failure_working_memory: WorkingMemory = {
++                "task_question": str(working_memory.get("task_question", state["task"].question)),
++                "context_schema_summary": dict(working_memory.get("context_schema_summary", {})),
++                "answer_contract": dict(working_memory.get("answer_contract", {})),
++                "current_plan": dict(working_memory.get("current_plan", {})),
++                "completed_steps": list(working_memory.get("completed_steps", [])),
++                "failed_steps": list(working_memory.get("failed_steps", [])),
++                "known_variables": list(working_memory.get("known_variables", [])),
++                "latest_observation": dict(working_memory.get("latest_observation", {})),
++                "current_goal": "Stop: failure encountered.",
++                "warnings": list(working_memory.get("warnings", [])),
++                "errors": list(working_memory.get("errors", [])),
++                "repair_state": dict(working_memory.get("repair_state", {})),
++            }
++            failure_working_memory["errors"].append(failure_reason)
++            failure_working_memory["errors"] = failure_working_memory["errors"][-_WORKING_MEMORY_FAILED_LIMIT:]
++            working_memory = failure_working_memory
++
+         return {
+             "steps": steps,
+             "step_index": step_index,
+@@ -1273,6 +1973,7 @@ class LangGraphReActAgent:
+             "pending_step_started_at_utc": "",
+             "pending_step_started_perf": 0.0,
+             "pending_prompt_messages": [],
++            "working_memory": working_memory,
+         }
+ 
+     def _normalize_answer_cell(self, value: Any) -> Any:
+@@ -1583,6 +2284,7 @@ class LangGraphReActAgent:
+             "high_level_plan": {},
+             "high_level_plan_raw": "",
+             "plan_generation_error": None,
++            "working_memory": self._empty_working_memory(task.question),
+             "answer_validation": {},
+             "pending_raw_response": "",
+             "pending_step_started_at_utc": "",
+@@ -1617,6 +2319,9 @@ class LangGraphReActAgent:
+             "task_context_pack": final_state.get("task_context_pack", {}),
+             "task_snapshot": final_state.get("task_snapshot", {}),
+             "recommended_skills": [skill.name for skill in final_state.get("skill_definitions", [])],
++            "prompt_memory_mode": self.prompt_memory_mode,
++            "prompt_system_mode": self.prompt_system_mode,
++            "working_memory": final_state.get("working_memory", {}),
+             "high_level_plan": final_state.get("high_level_plan", {}),
+             "high_level_plan_raw": final_state.get("high_level_plan_raw", ""),
+             "plan_generation_error": final_state.get("plan_generation_error"),
+diff --git a/src/data_agent_baseline/agents/prompt.py b/src/data_agent_baseline/agents/prompt.py
+index 54c4e2e..0e6058a 100644
+--- a/src/data_agent_baseline/agents/prompt.py
++++ b/src/data_agent_baseline/agents/prompt.py
+@@ -3,6 +3,7 @@ from __future__ import annotations
+ import json
+ from functools import lru_cache
+ from pathlib import Path
++from typing import Any
+ 
+ from data_agent_baseline.benchmark.schema import PublicTask
+ 
+@@ -44,6 +45,37 @@ Keep reasoning concise and grounded in the observed data.
+ Notice!!! You must base your decisions on observed information and avoid making arbitrary assumptions, Especially the specific nouns in the question and the columns in the table
+ """.strip()
+ 
++MINIMAL_REACT_SYSTEM_PROMPT = """
++You are a data agent solving one benchmark task.
++
++Use only the provided tools and task context files.
++Base decisions only on observed tool results and the compact trusted state.
++Do not assume hidden history or outside data.
++
++Response format:
++Return exactly one ```json fenced block containing one JSON object with:
++- thought: concise string
++- action: string
++- action_input: object
++
++Do not output any text outside the JSON block.
++
++Tool protocol:
++- For execute_python, action_input must contain non-empty "code".
++- For execute_context_sql, action_input must contain "path" and "sql".
++- For execute_unified_sql, action_input must contain "sql".
++- For file-reading tools, provide the required "path".
++- The task ends only when action is "answer".
++- For answer, action_input must contain "columns" and "rows".
++
++Answer rules:
++- Return only requested value slots.
++- Use observed column names or validated aggregate expressions where possible.
++- Headers and column order are not scoring-critical; complete row value vectors are.
++- Do not fabricate values, columns, or files.
++- If required information is missing or a tool call fails, choose a valid next tool action instead of guessing.
++""".strip()
++
+ RESPONSE_EXAMPLES = """
+ Example response when you need to inspect the context:
+ ```json
+@@ -87,7 +119,18 @@ def _load_format_guardrails() -> str:
+     )
+ 
+ 
+-def build_system_prompt(tool_descriptions: str, system_prompt: str | None = None) -> str:
++def build_system_prompt(
++    tool_descriptions: str,
++    system_prompt: str | None = None,
++    *,
++    mode: str = "legacy",
++) -> str:
++    normalized_mode = str(mode).strip().lower()
++    if normalized_mode == "minimal":
++        return system_prompt or MINIMAL_REACT_SYSTEM_PROMPT
++    if normalized_mode != "legacy":
++        raise ValueError("build_system_prompt.mode must be 'minimal' or 'legacy'.")
++
+     base_prompt = system_prompt or REACT_SYSTEM_PROMPT
+     format_guardrails = _load_format_guardrails()
+     return (
+@@ -103,6 +146,27 @@ def build_system_prompt(tool_descriptions: str, system_prompt: str | None = None
+     )
+ 
+ 
++def build_tool_spec_prompt(
++    action_schemas: dict[str, dict[str, Any]],
++    *,
++    max_actions: int = 40,
++) -> str:
++    lines = ["Available actions (minimal schema):"]
++    action_names = sorted(str(name) for name in action_schemas)
++    for action_name in action_names[: max(max_actions, 1)]:
++        raw_schema = action_schemas.get(action_name, {})
++        keys: list[str] = []
++        if isinstance(raw_schema, dict):
++            keys = [str(key).strip() for key in raw_schema if str(key).strip()]
++        rendered_keys = ", ".join(keys)
++        if rendered_keys:
++            lines.append(f"- {action_name}({{{rendered_keys}}})")
++        else:
++            lines.append(f"- {action_name}({{}})")
++    lines.append("Use only these actions and keep action_input as a JSON object.")
++    return "\n".join(lines)
++
++
+ def build_task_prompt(task: PublicTask) -> str:
+     return (
+         f"Question: {task.question}\n"
+diff --git a/src/data_agent_baseline/agents/skills.py b/src/data_agent_baseline/agents/skills.py
+index 183b655..f27c46b 100644
+--- a/src/data_agent_baseline/agents/skills.py
++++ b/src/data_agent_baseline/agents/skills.py
+@@ -2,7 +2,17 @@ from __future__ import annotations
+ 
+ from dataclasses import dataclass
+ from pathlib import Path
+-from typing import Any
++import re
++from typing import Any, Sequence
++
++import yaml
++
++SKILL_FILE_NAME = "SKILL.md"
++_MAX_PLAYBOOK_CHARS = 420
++_FRONTMATTER_RE = re.compile(
++    r"^\s*---\s*\r?\n(?P<frontmatter>.*?)\r?\n---\s*(?P<body>.*)$",
++    flags=re.DOTALL,
++)
+ 
+ 
+ @dataclass(frozen=True, slots=True)
+@@ -12,6 +22,13 @@ class SkillDefinition:
+     trigger_extensions: tuple[str, ...]
+     trigger_keywords: tuple[str, ...]
+     playbook: str
++    path: str | None = None
++    source: str = "builtin"
++    tags: tuple[str, ...] = ()
++    required_tools: tuple[str, ...] = ()
++    required_knowledge: tuple[str, ...] = ()
++    version: str | None = None
++    author: str | None = None
+ 
+ 
+ SKILL_LIBRARY: tuple[SkillDefinition, ...] = (
+@@ -19,54 +36,296 @@ SKILL_LIBRARY: tuple[SkillDefinition, ...] = (
+         name="tabular_aggregation",
+         description="Reliable tabular aggregation over CSV/Excel style files.",
+         trigger_extensions=(".csv", ".tsv", ".xlsx", ".xls"),
+-        trigger_keywords=("average", "sum", "count", "top", "group", "排名", "平均", "统计"),
++        trigger_keywords=(
++            "csv",
++            "excel",
++            "spreadsheet",
++            "average",
++            "sum",
++            "count",
++            "top",
++            "group",
++            "ranking",
++            "统计",
++            "汇总",
++            "平均",
++        ),
+         playbook=(
+             "Use list_context -> read_csv for schema preview; switch to execute_python for full-table "
+             "aggregation when row count is large; submit only final columns requested by the question."
+         ),
++        tags=("tabular", "aggregation"),
++        required_tools=("list_context", "read_csv", "execute_python"),
+     ),
+     SkillDefinition(
+         name="json_nested_extraction",
+         description="Nested-field extraction and normalization from JSON documents.",
+         trigger_extensions=(".json",),
+-        trigger_keywords=("json", "field", "nested", "属性", "字段", "键"),
++        trigger_keywords=(
++            "json",
++            "field",
++            "nested",
++            "flatten",
++            "schema",
++            "key",
++            "字段",
++            "嵌套",
++            "键",
++        ),
+         playbook=(
+             "Inspect representative JSON samples with read_json, then flatten nested keys in execute_python. "
+             "Normalize missing values explicitly before computing aggregates."
+         ),
++        tags=("json", "normalization"),
++        required_tools=("read_json", "execute_python"),
+     ),
+     SkillDefinition(
+         name="sqlite_analysis",
+         description="Schema-first SQL analysis over SQLite/DB files.",
+         trigger_extensions=(".sqlite", ".db"),
+-        trigger_keywords=("sql", "database", "join", "table", "数据库", "表", "关联"),
++        trigger_keywords=(
++            "sql",
++            "database",
++            "sqlite",
++            "join",
++            "table",
++            "query",
++            "数据库",
++            "关联",
++            "表",
++        ),
+         playbook=(
+             "Run inspect_sqlite_schema first, then execute_context_sql with explicit SELECT projections and "
+             "limits before final aggregation."
+         ),
++        tags=("sql", "database"),
++        required_tools=("inspect_sqlite_schema", "execute_context_sql"),
+     ),
+     SkillDefinition(
+         name="document_evidence",
+         description="Fact extraction from text/markdown documents.",
+         trigger_extensions=(".txt", ".md"),
+-        trigger_keywords=("document", "text", "policy", "report", "文档", "文本", "说明"),
++        trigger_keywords=(
++            "document",
++            "text",
++            "policy",
++            "report",
++            "manual",
++            "spec",
++            "文档",
++            "文本",
++            "说明",
++        ),
+         playbook=(
+             "Use read_doc for evidence snippets; extract exact values and keep units/date context intact when "
+             "constructing answers."
+         ),
++        tags=("evidence", "document"),
++        required_tools=("read_doc",),
+     ),
+     SkillDefinition(
+         name="cross_source_validation",
+         description="Cross-check values across multiple file types and detect inconsistencies.",
+         trigger_extensions=(),
+-        trigger_keywords=("compare", "difference", "match", "verify", "对比", "一致", "校验"),
++        trigger_keywords=(
++            "compare",
++            "difference",
++            "match",
++            "verify",
++            "cross source",
++            "对比",
++            "校验",
++            "一致性",
++        ),
+         playbook=(
+             "Collect candidate values from each source separately, then compare with execute_python before "
+             "submitting. Prefer deterministic tie-breaking rules."
+         ),
++        tags=("cross-source", "validation"),
++        required_tools=("execute_python",),
+     ),
+ )
+ 
++def _to_text(value: Any) -> str:
++    return str(value).strip() if value is not None else ""
++
++
++def _unique(items: list[str]) -> tuple[str, ...]:
++    seen: set[str] = set()
++    ordered: list[str] = []
++    for item in items:
++        if item in seen:
++            continue
++        seen.add(item)
++        ordered.append(item)
++    return tuple(ordered)
++
++
++def _normalize_extensions(raw_value: Any) -> tuple[str, ...]:
++    if raw_value is None:
++        return ()
++    values: list[str]
++    if isinstance(raw_value, str):
++        values = [part.strip() for part in raw_value.split(",") if part.strip()]
++    elif isinstance(raw_value, list):
++        values = [_to_text(item) for item in raw_value if _to_text(item)]
++    else:
++        return ()
++    normalized: list[str] = []
++    for value in values:
++        item = value.lower()
++        if not item.startswith("."):
++            item = f".{item}"
++        normalized.append(item)
++    return _unique(normalized)
++
++
++def _normalize_keywords(raw_value: Any) -> tuple[str, ...]:
++    if raw_value is None:
++        return ()
++    if isinstance(raw_value, str):
++        values = [part.strip() for part in re.split(r"[,\n;|]", raw_value) if part.strip()]
++    elif isinstance(raw_value, list):
++        values = [_to_text(item) for item in raw_value if _to_text(item)]
++    else:
++        return ()
++    return _unique([value.lower() for value in values if value])
++
++
++def _extract_keywords(description: str, name: str, tags: tuple[str, ...]) -> tuple[str, ...]:
++    candidates: list[str] = []
++    quoted_segments = re.findall(r'"([^"]+)"', description)
++    for segment in quoted_segments:
++        candidates.extend([part.strip().lower() for part in segment.split(",") if part.strip()])
++    for token in re.split(r"[-_\s]+", name):
++        token = token.strip().lower()
++        if len(token) >= 3:
++            candidates.append(token)
++    for tag in tags:
++        if tag:
++            candidates.append(tag.lower())
++    return _unique(candidates)
++
++
++def _summarize_playbook(markdown_body: str) -> str:
++    lines = [line.strip() for line in markdown_body.splitlines() if line.strip()]
++    cleaned_lines: list[str] = []
++    for line in lines:
++        if line.startswith("#"):
++            continue
++        normalized = re.sub(r"^[-*]\s+", "", line)
++        normalized = re.sub(r"^\d+\.\s+", "", normalized)
++        cleaned_lines.append(normalized)
++    if not cleaned_lines:
++        return ""
++
++    snippets = cleaned_lines[:4]
++    summary = "; ".join(snippets)
++    summary = re.sub(r"\s+", " ", summary).strip()
++    if len(summary) <= _MAX_PLAYBOOK_CHARS:
++        return summary
++    truncated = summary[: _MAX_PLAYBOOK_CHARS - 3].rstrip()
++    return f"{truncated}..."
++
++
++def parse_skill_markdown(skill_md_path: Path) -> SkillDefinition | None:
++    try:
++        content = skill_md_path.read_text(encoding="utf-8")
++    except OSError:
++        return None
++    content = content.lstrip("\ufeff")
++    match = _FRONTMATTER_RE.match(content)
++    if not match:
++        return None
++
++    frontmatter_text = str(match.group("frontmatter") or "")
++    body = str(match.group("body") or "").strip()
++    try:
++        payload = yaml.safe_load(frontmatter_text) or {}
++    except yaml.YAMLError:
++        return None
++    if not isinstance(payload, dict):
++        return None
++
++    name = _to_text(payload.get("name"))
++    description = _to_text(payload.get("description"))
++    if not name or not description:
++        return None
++
++    tags = _normalize_keywords(payload.get("tags"))
++    trigger_keywords = _normalize_keywords(payload.get("trigger_keywords"))
++    if not trigger_keywords:
++        trigger_keywords = _extract_keywords(description, name, tags)
++    trigger_extensions = _normalize_extensions(
++        payload.get("trigger_extensions")
++        or payload.get("supported_extensions")
++        or payload.get("file_extensions")
++    )
++
++    playbook = _to_text(payload.get("playbook")) or _summarize_playbook(body)
++    required_tools = _normalize_keywords(payload.get("required_tools"))
++    required_knowledge = _normalize_keywords(payload.get("required_knowledge"))
++    version = _to_text(payload.get("version")) or None
++    author = _to_text(payload.get("author")) or None
++
++    return SkillDefinition(
++        name=name,
++        description=description,
++        trigger_extensions=trigger_extensions,
++        trigger_keywords=trigger_keywords,
++        playbook=playbook,
++        path=str(skill_md_path),
++        source="file",
++        tags=tags,
++        required_tools=required_tools,
++        required_knowledge=required_knowledge,
++        version=version,
++        author=author,
++    )
++
++
++def _iter_skill_markdown_files(source_dir: Path, *, recursive: bool) -> list[Path]:
++    if recursive:
++        paths = [path for path in source_dir.glob(f"**/{SKILL_FILE_NAME}") if path.is_file()]
++    else:
++        paths = [path for path in source_dir.glob(f"*/{SKILL_FILE_NAME}") if path.is_file()]
++    return sorted(paths, key=lambda path: path.as_posix())
++
++
++def load_skills_from_sources(
++    source_dirs: Sequence[Path],
++    *,
++    recursive: bool = True,
++) -> tuple[SkillDefinition, ...]:
++    loaded: dict[str, SkillDefinition] = {}
++    for source_dir in source_dirs:
++        resolved_source = source_dir.expanduser().resolve()
++        if not resolved_source.exists() or not resolved_source.is_dir():
++            continue
++        for skill_path in _iter_skill_markdown_files(resolved_source, recursive=recursive):
++            skill = parse_skill_markdown(skill_path)
++            if skill is None:
++                continue
++            if skill.name in loaded:
++                del loaded[skill.name]
++            loaded[skill.name] = skill
++    return tuple(loaded.values())
++
++
++def load_skill_library(
++    *,
++    source_dirs: Sequence[Path] = (),
++    recursive: bool = True,
++    include_builtin: bool = True,
++) -> tuple[SkillDefinition, ...]:
++    loaded_from_files = load_skills_from_sources(source_dirs, recursive=recursive)
++    if include_builtin:
++        merged: dict[str, SkillDefinition] = {skill.name: skill for skill in SKILL_LIBRARY}
++        for skill in loaded_from_files:
++            merged[skill.name] = skill
++        return tuple(merged.values())
++    return loaded_from_files
++
+ 
+ def build_context_profile(entries: list[dict[str, Any]]) -> dict[str, Any]:
+     extension_counts: dict[str, int] = {}
+@@ -87,31 +346,83 @@ def build_context_profile(entries: list[dict[str, Any]]) -> dict[str, Any]:
+     }
+ 
+ 
+-def recommend_skills(task_question: str, context_profile: dict[str, Any]) -> list[SkillDefinition]:
++def _active_extension_count(extension_counts: dict[str, int]) -> int:
++    return sum(1 for extension, count in extension_counts.items() if extension != "<none>" and count > 0)
++
++
++def recommend_skills(
++    task_question: str,
++    context_profile: dict[str, Any],
++    *,
++    skill_library: Sequence[SkillDefinition] | None = None,
++    max_skills: int = 6,
++) -> list[SkillDefinition]:
++    library = list(skill_library or SKILL_LIBRARY)
++    if not library:
++        return []
++
+     lowered_question = task_question.lower()
+     extension_counts = context_profile.get("extension_counts", {})
++    if not isinstance(extension_counts, dict):
++        extension_counts = {}
++
++    scored: list[tuple[int, int, int, int, int, SkillDefinition]] = []
++    for index, skill in enumerate(library):
++        extension_hits = sum(1 for ext in skill.trigger_extensions if extension_counts.get(ext, 0) > 0)
++        keyword_hits = sum(1 for keyword in skill.trigger_keywords if keyword in lowered_question)
++        tag_hits = sum(1 for tag in skill.tags if tag and tag in lowered_question)
++        score = extension_hits * 4 + keyword_hits * 3 + tag_hits
++        if score > 0:
++            scored.append((score, extension_hits, keyword_hits, tag_hits, -index, skill))
++
+     selected: list[SkillDefinition] = []
++    if scored:
++        scored.sort(reverse=True, key=lambda item: item[:-1])
++        selected = [item[-1] for item in scored]
++    else:
++        extension_rank: list[tuple[int, int, SkillDefinition]] = []
++        for index, skill in enumerate(library):
++            extension_hits = sum(1 for ext in skill.trigger_extensions if extension_counts.get(ext, 0) > 0)
++            extension_rank.append((extension_hits, -index, skill))
++        extension_rank.sort(reverse=True, key=lambda item: item[:-1])
++        if extension_rank and extension_rank[0][0] > 0:
++            selected.append(extension_rank[0][-1])
++        else:
++            selected.append(library[0])
+ 
+-    for skill in SKILL_LIBRARY:
+-        has_extension_trigger = any(extension_counts.get(ext, 0) > 0 for ext in skill.trigger_extensions)
+-        has_keyword_trigger = any(keyword.lower() in lowered_question for keyword in skill.trigger_keywords)
+-        if has_extension_trigger or has_keyword_trigger:
+-            selected.append(skill)
++    if _active_extension_count(extension_counts) >= 2:
++        cross_source_skill = next(
++            (
++                skill
++                for skill in library
++                if skill.name == "cross_source_validation"
++                or ("cross" in skill.name and "source" in skill.name)
++            ),
++            None,
++        )
++        if cross_source_skill is not None and cross_source_skill not in selected:
++            selected.append(cross_source_skill)
+ 
+-    # Always provide one generic guardrail if no specific skill matched.
+-    if not selected:
+-        selected.append(SKILL_LIBRARY[0])
++    unique_selected: list[SkillDefinition] = []
++    for skill in selected:
++        if skill not in unique_selected:
++            unique_selected.append(skill)
+ 
+-    # Cross-source validation is valuable when multiple file types are present.
+-    if len(extension_counts) >= 2 and SKILL_LIBRARY[-1] not in selected:
+-        selected.append(SKILL_LIBRARY[-1])
+-    return selected
++    if max_skills < 1:
++        max_skills = 1
++    return unique_selected[:max_skills]
+ 
+ 
+ def render_skills_for_prompt(skills: list[SkillDefinition]) -> str:
++    if not skills:
++        return "- none"
++
+     lines: list[str] = []
+     for skill in skills:
+         lines.append(f"- {skill.name}: {skill.description}")
+-        lines.append(f"  playbook: {skill.playbook}")
++        if skill.required_tools:
++            lines.append(f"  suggested_tools: {', '.join(skill.required_tools)}")
++        if skill.playbook:
++            lines.append(f"  playbook: {skill.playbook}")
+     return "\n".join(lines)
+ 
+diff --git a/src/data_agent_baseline/config.py b/src/data_agent_baseline/config.py
+index 5b7a54e..a0a75e7 100644
+--- a/src/data_agent_baseline/config.py
++++ b/src/data_agent_baseline/config.py
+@@ -41,6 +41,13 @@ def _default_run_output_dir() -> Path:
+     return PROJECT_ROOT / "artifacts" / "runs"
+ 
+ 
++def _default_skills_source_dirs() -> tuple[Path, ...]:
++    return (
++        PROJECT_ROOT / "src" / "data_agent_baseline" / "skills",
++        PROJECT_ROOT / "skills",
++    )
++
++
+ @dataclass(frozen=True, slots=True)
+ class DatasetConfig:
+     root_path: Path = field(default_factory=_default_dataset_root)
+@@ -78,17 +85,30 @@ class LangGraphRuntimeConfig:
+     require_supported_answer: bool = False
+     enable_context_pack: bool = True
+     context_pack_char_budget: int = 8000
++    prompt_memory_mode: str = "compact_state"
++    prompt_system_mode: str = "minimal"
+     prompt_total_char_budget: int = 48000
+     prompt_recent_step_count: int = 4
+     prompt_max_bootstrap_observations: int = 4
+ 
+ 
++@dataclass(frozen=True, slots=True)
++class SkillsConfig:
++    enabled: bool = True
++    include_builtin_library: bool = True
++    recursive_discovery: bool = True
++    max_recommendations: int = 6
++    script_timeout_seconds: int = 120
++    source_dirs: tuple[Path, ...] = field(default_factory=_default_skills_source_dirs)
++
++
+ @dataclass(frozen=True, slots=True)
+ class AppConfig:
+     dataset: DatasetConfig = field(default_factory=DatasetConfig)
+     agent: AgentConfig = field(default_factory=AgentConfig)
+     run: RunConfig = field(default_factory=RunConfig)
+     langgraph: LangGraphRuntimeConfig = field(default_factory=LangGraphRuntimeConfig)
++    skills: SkillsConfig = field(default_factory=SkillsConfig)
+ 
+ 
+ def _load_yaml_mapping(path: Path) -> dict[str, Any]:
+@@ -112,6 +132,32 @@ def _path_value(raw_value: str | None, default_value: Path) -> Path:
+     return (PROJECT_ROOT / candidate).resolve()
+ 
+ 
++def _path_list_value(raw_value: object, default_value: tuple[Path, ...]) -> tuple[Path, ...]:
++    if raw_value is None:
++        return default_value
++    if isinstance(raw_value, (str, Path)):
++        raw_items: list[object] = [raw_value]
++    elif isinstance(raw_value, list):
++        raw_items = raw_value
++    else:
++        return default_value
++
++    paths: list[Path] = []
++    seen: set[str] = set()
++    for item in raw_items:
++        text = str(item).strip()
++        if not text:
++            continue
++        candidate = Path(text).expanduser()
++        resolved = candidate if candidate.is_absolute() else (PROJECT_ROOT / candidate).resolve()
++        key = resolved.as_posix()
++        if key in seen:
++            continue
++        seen.add(key)
++        paths.append(resolved)
++    return tuple(paths) or default_value
++
++
+ def _to_bool(value: object, default: bool) -> bool:
+     if value is None:
+         return default
+@@ -125,6 +171,24 @@ def _to_bool(value: object, default: bool) -> bool:
+     return default
+ 
+ 
++def _normalize_prompt_memory_mode(value: object, default: str) -> str:
++    if value is None:
++        return default
++    normalized = str(value).strip().lower()
++    if normalized in {"full_history", "compact_state"}:
++        return normalized
++    raise ValueError("langgraph.prompt_memory_mode must be 'full_history' or 'compact_state'.")
++
++
++def _normalize_prompt_system_mode(value: object, default: str) -> str:
++    if value is None:
++        return default
++    normalized = str(value).strip().lower()
++    if normalized in {"minimal", "legacy"}:
++        return normalized
++    raise ValueError("langgraph.prompt_system_mode must be 'minimal' or 'legacy'.")
++
++
+ def load_app_config(config_path: Path) -> AppConfig:
+     dotenv_values = _load_dotenv(ENV_FILE)
+     payload = _load_yaml_mapping(config_path)
+@@ -133,12 +197,15 @@ def load_app_config(config_path: Path) -> AppConfig:
+     agent_defaults = AgentConfig()
+     run_defaults = RunConfig()
+     langgraph_defaults = LangGraphRuntimeConfig()
++    skills_defaults = SkillsConfig()
+ 
+     dataset_payload = payload.get("dataset", {})
+     agent_payload = payload.get("agent", {})
+     run_payload = payload.get("run", {})
+     config_langgraph_payload = payload.get("langgraph", {})
+     agent_param_langgraph_payload = agent_param_payload.get("langgraph", {})
++    config_skills_payload = payload.get("skills", {})
++    agent_param_skills_payload = agent_param_payload.get("skills", {})
+     if not isinstance(dataset_payload, dict):
+         dataset_payload = {}
+     if not isinstance(agent_payload, dict):
+@@ -149,6 +216,10 @@ def load_app_config(config_path: Path) -> AppConfig:
+         config_langgraph_payload = {}
+     if not isinstance(agent_param_langgraph_payload, dict):
+         agent_param_langgraph_payload = {}
++    if not isinstance(config_skills_payload, dict):
++        config_skills_payload = {}
++    if not isinstance(agent_param_skills_payload, dict):
++        agent_param_skills_payload = {}
+ 
+     dataset_config = DatasetConfig(
+         root_path=_path_value(dataset_payload.get("root_path"), dataset_defaults.root_path),
+@@ -269,6 +340,16 @@ def load_app_config(config_path: Path) -> AppConfig:
+             "context_pack_char_budget",
+             langgraph_defaults.context_pack_char_budget,
+         ),
++        "prompt_memory_mode": _mapping_value(
++            agent_param_langgraph_payload,
++            "prompt_memory_mode",
++            langgraph_defaults.prompt_memory_mode,
++        ),
++        "prompt_system_mode": _mapping_value(
++            agent_param_langgraph_payload,
++            "prompt_system_mode",
++            langgraph_defaults.prompt_system_mode,
++        ),
+         "prompt_total_char_budget": _mapping_value(
+             agent_param_langgraph_payload,
+             "prompt_total_char_budget",
+@@ -309,13 +390,72 @@ def load_app_config(config_path: Path) -> AppConfig:
+             langgraph_defaults.enable_context_pack,
+         ),
+         context_pack_char_budget=int(langgraph_payload["context_pack_char_budget"]),
++        prompt_memory_mode=_normalize_prompt_memory_mode(
++            langgraph_payload.get("prompt_memory_mode"),
++            langgraph_defaults.prompt_memory_mode,
++        ),
++        prompt_system_mode=_normalize_prompt_system_mode(
++            langgraph_payload.get("prompt_system_mode"),
++            langgraph_defaults.prompt_system_mode,
++        ),
+         prompt_total_char_budget=int(langgraph_payload["prompt_total_char_budget"]),
+         prompt_recent_step_count=int(langgraph_payload["prompt_recent_step_count"]),
+         prompt_max_bootstrap_observations=int(langgraph_payload["prompt_max_bootstrap_observations"]),
+     )
++    skills_base = {
++        "enabled": _mapping_value(
++            agent_param_skills_payload,
++            "enabled",
++            skills_defaults.enabled,
++        ),
++        "include_builtin_library": _mapping_value(
++            agent_param_skills_payload,
++            "include_builtin_library",
++            skills_defaults.include_builtin_library,
++        ),
++        "recursive_discovery": _mapping_value(
++            agent_param_skills_payload,
++            "recursive_discovery",
++            skills_defaults.recursive_discovery,
++        ),
++        "max_recommendations": _mapping_value(
++            agent_param_skills_payload,
++            "max_recommendations",
++            skills_defaults.max_recommendations,
++        ),
++        "script_timeout_seconds": _mapping_value(
++            agent_param_skills_payload,
++            "script_timeout_seconds",
++            skills_defaults.script_timeout_seconds,
++        ),
++        "source_dirs": _mapping_value(
++            agent_param_skills_payload,
++            "source_dirs",
++            skills_defaults.source_dirs,
++        ),
++    }
++    skills_payload = {
++        key: _mapping_value(config_skills_payload, key, value)
++        for key, value in skills_base.items()
++    }
++    skills_config = SkillsConfig(
++        enabled=_to_bool(skills_payload["enabled"], skills_defaults.enabled),
++        include_builtin_library=_to_bool(
++            skills_payload["include_builtin_library"],
++            skills_defaults.include_builtin_library,
++        ),
++        recursive_discovery=_to_bool(
++            skills_payload["recursive_discovery"],
++            skills_defaults.recursive_discovery,
++        ),
++        max_recommendations=max(1, int(skills_payload["max_recommendations"])),
++        script_timeout_seconds=max(1, int(skills_payload["script_timeout_seconds"])),
++        source_dirs=_path_list_value(skills_payload["source_dirs"], skills_defaults.source_dirs),
++    )
+     return AppConfig(
+         dataset=dataset_config,
+         agent=agent_config,
+         run=run_config,
+         langgraph=langgraph_config,
++        skills=skills_config,
+     )
+diff --git a/src/data_agent_baseline/run/runner.py b/src/data_agent_baseline/run/runner.py
+index 293e889..47f175b 100644
+--- a/src/data_agent_baseline/run/runner.py
++++ b/src/data_agent_baseline/run/runner.py
+@@ -102,6 +102,14 @@ def _failure_run_result_payload(task_id: str, failure_reason: str) -> dict[str,
+     }
+ 
+ 
++def _create_tool_registry(config: AppConfig) -> ToolRegistry:
++    return create_default_tool_registry(
++        skill_source_dirs=config.skills.source_dirs,
++        skill_recursive_discovery=config.skills.recursive_discovery,
++        skill_script_timeout_seconds=config.skills.script_timeout_seconds,
++    )
++
++
+ def _run_single_task_core(
+     *,
+     task_id: str,
+@@ -112,7 +120,7 @@ def _run_single_task_core(
+     public_dataset = DABenchPublicDataset(config.dataset.root_path)
+     task = public_dataset.get_task(task_id)
+     effective_model = model or build_model_adapter(config)
+-    effective_tools = tools or create_default_tool_registry()
++    effective_tools = tools or _create_tool_registry(config)
+     framework = config.agent.framework.lower()
+     if framework == "langgraph":
+         agent = LangGraphReActAgent(
+@@ -132,9 +140,16 @@ def _run_single_task_core(
+                 require_supported_answer=config.langgraph.require_supported_answer,
+                 enable_context_pack=config.langgraph.enable_context_pack,
+                 context_pack_char_budget=config.langgraph.context_pack_char_budget,
++                prompt_memory_mode=config.langgraph.prompt_memory_mode,
++                prompt_system_mode=config.langgraph.prompt_system_mode,
+                 prompt_total_char_budget=config.langgraph.prompt_total_char_budget,
+                 prompt_recent_step_count=config.langgraph.prompt_recent_step_count,
+                 prompt_max_bootstrap_observations=config.langgraph.prompt_max_bootstrap_observations,
++                skill_enabled=config.skills.enabled,
++                skill_source_dirs=config.skills.source_dirs,
++                skill_recursive_discovery=config.skills.recursive_discovery,
++                skill_include_builtin=config.skills.include_builtin_library,
++                skill_max_recommendations=config.skills.max_recommendations,
+             ),
+         )
+     elif framework == "react":
+@@ -393,7 +408,7 @@ def run_benchmark(
+     task_artifacts: list[TaskRunArtifacts]
+     if effective_workers == 1:
+         shared_model = model or build_model_adapter(config)
+-        shared_tools = tools or create_default_tool_registry()
++        shared_tools = tools or _create_tool_registry(config)
+         task_artifacts = []
+         for task_id in task_ids:
+             artifact = run_single_task(
+@@ -469,7 +484,7 @@ def run_official_benchmark(
+     task_artifacts: list[TaskRunArtifacts]
+     if effective_workers == 1:
+         shared_model = model or build_model_adapter(config)
+-        shared_tools = tools or create_default_tool_registry()
++        shared_tools = tools or _create_tool_registry(config)
+         task_artifacts = []
+         for task_id in task_ids:
+             artifact = run_official_task(
+diff --git a/src/data_agent_baseline/tools/registry.py b/src/data_agent_baseline/tools/registry.py
+index 1b08060..95acea4 100644
+--- a/src/data_agent_baseline/tools/registry.py
++++ b/src/data_agent_baseline/tools/registry.py
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
+ 
+ from dataclasses import dataclass
++from pathlib import Path
+ from typing import Any, Callable
+ 
+ from data_agent_baseline.benchmark.schema import AnswerTable, PublicTask
+@@ -20,10 +21,16 @@ from data_agent_baseline.tools.filesystem import (
+     resolve_context_path,
+ )
+ from data_agent_baseline.tools.python_exec import execute_python_code
++from data_agent_baseline.tools.skill_runtime import (
++    execute_skill_script_file as run_skill_script_file,
++    get_skill_resource as run_get_skill_resource,
++    list_skill_summaries as run_list_skill_summaries,
++)
+ from data_agent_baseline.tools.sqlite import execute_read_only_sql, inspect_sqlite_schema
+ from data_agent_baseline.tools.unified_db import execute_unified_sql, inspect_unified_schema
+ 
+ EXECUTE_PYTHON_TIMEOUT_SECONDS = 30
++EXECUTE_SKILL_SCRIPT_TIMEOUT_SECONDS = 120
+ 
+ 
+ @dataclass(frozen=True, slots=True)
+@@ -224,6 +231,91 @@ def _run_controlled_query_pipeline(task: PublicTask, action_input: dict[str, Any
+     )
+ 
+ 
++def _execute_skill_script_file(
++    task: PublicTask,
++    action_input: dict[str, Any],
++    *,
++    source_dirs: tuple[Path, ...] | None,
++    recursive: bool,
++    timeout_seconds: int,
++) -> ToolExecutionResult:
++    skill_name = str(action_input.get("skill_name", "")).strip()
++    script_file_name = str(action_input.get("script_file_name", "")).strip()
++    if not skill_name:
++        raise ValueError("execute_skill_script_file.skill_name is required.")
++    if not script_file_name:
++        raise ValueError("execute_skill_script_file.script_file_name is required.")
++
++    args = action_input.get("args", {})
++    if args is None:
++        args = {}
++    if not isinstance(args, dict):
++        raise ValueError("execute_skill_script_file.args must be a JSON object.")
++
++    content = run_skill_script_file(
++        task=task,
++        skill_name=skill_name,
++        script_file_name=script_file_name,
++        args=args,
++        source_dirs=source_dirs,
++        recursive=recursive,
++        timeout_seconds=timeout_seconds,
++    )
++    return ToolExecutionResult(ok=bool(content.get("ok")), content=content)
++
++
++def _get_skill_resource(
++    task: PublicTask,
++    action_input: dict[str, Any],
++    *,
++    source_dirs: tuple[Path, ...] | None,
++    recursive: bool,
++    timeout_seconds: int,
++) -> ToolExecutionResult:
++    skill_name = str(action_input.get("skill_name", "")).strip()
++    resource_path = str(action_input.get("resource_path", "")).strip()
++    if not skill_name:
++        raise ValueError("get_skill_resource.skill_name is required.")
++    if not resource_path:
++        raise ValueError("get_skill_resource.resource_path is required.")
++
++    args = action_input.get("args", {})
++    if args is None:
++        args = {}
++    if not isinstance(args, dict):
++        raise ValueError("get_skill_resource.args must be a JSON object.")
++
++    content = run_get_skill_resource(
++        task=task,
++        skill_name=skill_name,
++        resource_path=resource_path,
++        args=args,
++        source_dirs=source_dirs,
++        recursive=recursive,
++        timeout_seconds=timeout_seconds,
++    )
++    return ToolExecutionResult(ok=bool(content.get("ok")), content=content)
++
++
++def _list_skills(
++    _: PublicTask,
++    action_input: dict[str, Any],
++    *,
++    source_dirs: tuple[Path, ...] | None,
++    recursive: bool,
++) -> ToolExecutionResult:
++    del action_input
++    skills = run_list_skill_summaries(source_dirs=source_dirs, recursive=recursive)
++    return ToolExecutionResult(
++        ok=True,
++        content={
++            "ok": True,
++            "skill_count": len(skills),
++            "skills": skills,
++        },
++    )
++
++
+ def _answer(_: PublicTask, action_input: dict[str, Any]) -> ToolExecutionResult:
+     columns = action_input.get("columns")
+     rows = action_input.get("rows")
+@@ -272,7 +364,14 @@ class ToolRegistry:
+         return self.handlers[action](task, action_input)
+ 
+ 
+-def create_default_tool_registry() -> ToolRegistry:
++def create_default_tool_registry(
++    *,
++    skill_source_dirs: tuple[Path, ...] = (),
++    skill_recursive_discovery: bool = True,
++    skill_script_timeout_seconds: int = EXECUTE_SKILL_SCRIPT_TIMEOUT_SECONDS,
++) -> ToolRegistry:
++    effective_skill_source_dirs = skill_source_dirs or None
++    effective_skill_script_timeout = max(1, int(skill_script_timeout_seconds))
+     specs = {
+         "answer": ToolSpec(
+             name="answer",
+@@ -307,6 +406,31 @@ def create_default_tool_registry() -> ToolRegistry:
+                 "code": "import os\nprint(sorted(os.listdir('.')))",
+             },
+         ),
++        "execute_skill_script_file": ToolSpec(
++            name="execute_skill_script_file",
++            description=(
++                "Execute a Python script under a discovered skill's scripts directory. "
++                "Use only for deterministic helper scripts after inspecting the skill contract. "
++                "Task files should be referenced relative to the task context directory."
++            ),
++            input_schema={
++                "skill_name": "tabular_aggregation",
++                "script_file_name": "scripts/table_summary.py",
++                "args": {"input_file": "csv/data.csv"},
++            },
++        ),
++        "get_skill_resource": ToolSpec(
++            name="get_skill_resource",
++            description=(
++                "Read a discovered skill resource such as SKILL.md, references, or templates; "
++                "scripts/*.py resources are executed through the same sandboxed skill runtime."
++            ),
++            input_schema={
++                "skill_name": "tabular_aggregation",
++                "resource_path": "references/workflow.md",
++                "args": {"max_chars": 8000},
++            },
++        ),
+         "execute_logical_query": ToolSpec(
+             name="execute_logical_query",
+             description=(
+@@ -340,6 +464,11 @@ def create_default_tool_registry() -> ToolRegistry:
+             description="List files and directories available under context.",
+             input_schema={"max_depth": 4},
+         ),
++        "list_skills": ToolSpec(
++            name="list_skills",
++            description="List discovered SKILL.md definitions from configured skill source directories.",
++            input_schema={},
++        ),
+         "plan_logical_query": ToolSpec(
+             name="plan_logical_query",
+             description=(
+@@ -399,10 +528,30 @@ def create_default_tool_registry() -> ToolRegistry:
+         "execute_logical_query": _execute_logical_query,
+         "execute_unified_sql": _execute_unified_sql,
+         "execute_python": _execute_python,
++        "execute_skill_script_file": lambda task, action_input: _execute_skill_script_file(
++            task,
++            action_input,
++            source_dirs=effective_skill_source_dirs,
++            recursive=skill_recursive_discovery,
++            timeout_seconds=effective_skill_script_timeout,
++        ),
++        "get_skill_resource": lambda task, action_input: _get_skill_resource(
++            task,
++            action_input,
++            source_dirs=effective_skill_source_dirs,
++            recursive=skill_recursive_discovery,
++            timeout_seconds=effective_skill_script_timeout,
++        ),
+         "ground_fields": _ground_fields,
+         "inspect_sqlite_schema": _inspect_sqlite_schema,
+         "inspect_unified_schema": _inspect_unified_schema,
+         "list_context": _list_context,
++        "list_skills": lambda task, action_input: _list_skills(
++            task,
++            action_input,
++            source_dirs=effective_skill_source_dirs,
++            recursive=skill_recursive_discovery,
++        ),
+         "plan_logical_query": _plan_logical_query,
+         "profile_schema": _profile_schema,
+         "read_csv": _read_csv,
