@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en-US">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Agent 学习笔记</title>
+    <meta name="generator" content="VuePress 1.9.10">
+    
+    <meta name="description" content="个人 AI、大模型、Agent、服务器集群与编程学习笔记">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta name="keywords" content="Agent, LLM, AI, VuePress, 学习笔记">
+    
+    <link rel="preload" href="/AgentNote/assets/css/0.styles.63aa9082.css" as="style"><link rel="preload" href="/AgentNote/assets/js/app.97963db6.js" as="script"><link rel="preload" href="/AgentNote/assets/js/2.280bba0b.js" as="script"><link rel="preload" href="/AgentNote/assets/js/1.91a5ad25.js" as="script"><link rel="preload" href="/AgentNote/assets/js/27.6dc672cb.js" as="script"><link rel="prefetch" href="/AgentNote/assets/js/11.a9eb3606.js"><link rel="prefetch" href="/AgentNote/assets/js/12.9a9169da.js"><link rel="prefetch" href="/AgentNote/assets/js/13.8ac95ab2.js"><link rel="prefetch" href="/AgentNote/assets/js/14.c9cdbea4.js"><link rel="prefetch" href="/AgentNote/assets/js/15.042e0556.js"><link rel="prefetch" href="/AgentNote/assets/js/16.cb54a26d.js"><link rel="prefetch" href="/AgentNote/assets/js/17.bf882994.js"><link rel="prefetch" href="/AgentNote/assets/js/18.e0953335.js"><link rel="prefetch" href="/AgentNote/assets/js/19.6a17bcc9.js"><link rel="prefetch" href="/AgentNote/assets/js/20.929146ef.js"><link rel="prefetch" href="/AgentNote/assets/js/21.b9d204ba.js"><link rel="prefetch" href="/AgentNote/assets/js/22.8ceb2502.js"><link rel="prefetch" href="/AgentNote/assets/js/23.3b948b4c.js"><link rel="prefetch" href="/AgentNote/assets/js/24.f5ca0b94.js"><link rel="prefetch" href="/AgentNote/assets/js/25.c2906c27.js"><link rel="prefetch" href="/AgentNote/assets/js/26.52e353b4.js"><link rel="prefetch" href="/AgentNote/assets/js/28.472d97c8.js"><link rel="prefetch" href="/AgentNote/assets/js/29.4eca33fb.js"><link rel="prefetch" href="/AgentNote/assets/js/3.fe271b85.js"><link rel="prefetch" href="/AgentNote/assets/js/30.69cdf650.js"><link rel="prefetch" href="/AgentNote/assets/js/31.1f56bd61.js"><link rel="prefetch" href="/AgentNote/assets/js/32.6cf01ef8.js"><link rel="prefetch" href="/AgentNote/assets/js/33.a5daba66.js"><link rel="prefetch" href="/AgentNote/assets/js/34.7cedfa04.js"><link rel="prefetch" href="/AgentNote/assets/js/35.a4cf4e0c.js"><link rel="prefetch" href="/AgentNote/assets/js/36.7bd20795.js"><link rel="prefetch" href="/AgentNote/assets/js/37.ce973284.js"><link rel="prefetch" href="/AgentNote/assets/js/38.e9dfad3b.js"><link rel="prefetch" href="/AgentNote/assets/js/39.61cdb4b4.js"><link rel="prefetch" href="/AgentNote/assets/js/4.5a86bab5.js"><link rel="prefetch" href="/AgentNote/assets/js/40.c0538f3d.js"><link rel="prefetch" href="/AgentNote/assets/js/41.323937cc.js"><link rel="prefetch" href="/AgentNote/assets/js/42.fac435a1.js"><link rel="prefetch" href="/AgentNote/assets/js/43.e674b689.js"><link rel="prefetch" href="/AgentNote/assets/js/44.73fd05be.js"><link rel="prefetch" href="/AgentNote/assets/js/45.947e8c2a.js"><link rel="prefetch" href="/AgentNote/assets/js/46.d0511a29.js"><link rel="prefetch" href="/AgentNote/assets/js/47.d69aa059.js"><link rel="prefetch" href="/AgentNote/assets/js/48.2feb2f3b.js"><link rel="prefetch" href="/AgentNote/assets/js/49.74aa45d4.js"><link rel="prefetch" href="/AgentNote/assets/js/5.233b85ac.js"><link rel="prefetch" href="/AgentNote/assets/js/50.b0fd7ab1.js"><link rel="prefetch" href="/AgentNote/assets/js/51.3814eb88.js"><link rel="prefetch" href="/AgentNote/assets/js/52.1d081830.js"><link rel="prefetch" href="/AgentNote/assets/js/53.91a1872a.js"><link rel="prefetch" href="/AgentNote/assets/js/54.cae64f79.js"><link rel="prefetch" href="/AgentNote/assets/js/55.18edf6ea.js"><link rel="prefetch" href="/AgentNote/assets/js/56.3fc2decd.js"><link rel="prefetch" href="/AgentNote/assets/js/57.af126cf0.js"><link rel="prefetch" href="/AgentNote/assets/js/58.262cb7db.js"><link rel="prefetch" href="/AgentNote/assets/js/59.dad461ba.js"><link rel="prefetch" href="/AgentNote/assets/js/6.481cc678.js"><link rel="prefetch" href="/AgentNote/assets/js/60.5c15f12d.js"><link rel="prefetch" href="/AgentNote/assets/js/61.07ecca54.js"><link rel="prefetch" href="/AgentNote/assets/js/62.e82b871e.js"><link rel="prefetch" href="/AgentNote/assets/js/63.dd3a3df1.js"><link rel="prefetch" href="/AgentNote/assets/js/64.0f0c9563.js"><link rel="prefetch" href="/AgentNote/assets/js/65.e8732739.js"><link rel="prefetch" href="/AgentNote/assets/js/66.43fef6d4.js"><link rel="prefetch" href="/AgentNote/assets/js/7.8efab13c.js"><link rel="prefetch" href="/AgentNote/assets/js/8.0ec1929b.js"><link rel="prefetch" href="/AgentNote/assets/js/vendors~docsearch.a32f4da1.js">
+    <link rel="stylesheet" href="/AgentNote/assets/css/0.styles.63aa9082.css">
+  </head>
+  <body>
+    <div id="app" data-server-rendered="true"><div class="theme-container"><header class="navbar"><div class="sidebar-button"><svg xmlns="http://www.w3.org/2000/svg" aria-hidden="true" role="img" viewBox="0 0 448 512" class="icon"><path fill="currentColor" d="M436 124H12c-6.627 0-12-5.373-12-12V80c0-6.627 5.373-12 12-12h424c6.627 0 12 5.373 12 12v32c0 6.627-5.373 12-12 12zm0 160H12c-6.627 0-12-5.373-12-12v-32c0-6.627 5.373-12 12-12h424c6.627 0 12 5.373 12 12v32c0 6.627-5.373 12-12 12zm0 160H12c-6.627 0-12-5.373-12-12v-32c0-6.627 5.373-12 12-12h424c6.627 0 12 5.373 12 12v32c0 6.627-5.373 12-12 12z"></path></svg></div> <a href="/AgentNote/" class="home-link router-link-active"><!----> <span class="site-name">Agent 学习笔记</span></a> <div class="links"><div class="search-box"><input aria-label="Search" autocomplete="off" spellcheck="false" value=""> <!----></div> <nav class="nav-links can-hide"><div class="nav-item"><a href="/AgentNote/" class="nav-link">
+  首页
+</a></div><div class="nav-item"><a href="/AgentNote/large-models/" class="nav-link">
+  大模型笔记
+</a></div><div class="nav-item"><a href="/AgentNote/agents/" class="nav-link">
+  Agent笔记
+</a></div><div class="nav-item"><a href="/AgentNote/python/" class="nav-link">
+  Python笔记
+</a></div><div class="nav-item"><a href="/AgentNote/servers/" class="nav-link">
+  服务器集群笔记
+</a></div><div class="nav-item"><a href="/AgentNote/kdd2026/" class="nav-link router-link-active">
+  KDD2026比赛分析
+</a></div> <!----></nav></div></header> <div class="sidebar-mask"></div> <aside class="sidebar"><nav class="nav-links"><div class="nav-item"><a href="/AgentNote/" class="nav-link">
+  首页
+</a></div><div class="nav-item"><a href="/AgentNote/large-models/" class="nav-link">
+  大模型笔记
+</a></div><div class="nav-item"><a href="/AgentNote/agents/" class="nav-link">
+  Agent笔记
+</a></div><div class="nav-item"><a href="/AgentNote/python/" class="nav-link">
+  Python笔记
+</a></div><div class="nav-item"><a href="/AgentNote/servers/" class="nav-link">
+  服务器集群笔记
+</a></div><div class="nav-item"><a href="/AgentNote/kdd2026/" class="nav-link router-link-active">
+  KDD2026比赛分析
+</a></div> <!----></nav>  <ul class="sidebar-links"><li><section class="sidebar-group depth-0"><p class="sidebar-heading open"><span>KDD2026比赛分析</span> <!----></p> <ul class="sidebar-links sidebar-group-items"><li><a href="/AgentNote/kdd2026/" aria-current="page" class="sidebar-link">KDD2026比赛分析</a></li><li><a href="/AgentNote/kdd2026/官方BaseLine技术架构.html" class="sidebar-link">DataAgent Baseline 技术报告</a></li><li><a href="/AgentNote/kdd2026/源码阅读.html" class="sidebar-link">KDD Cup 2026 Base 源码阅读</a></li><li><a href="/AgentNote/kdd2026/ContextPack优化方案.html" class="sidebar-link">Context Pack 优化与改进落地方案</a></li><li><a href="/AgentNote/kdd2026/新增TaskContextPack预案.html" class="sidebar-link">Data Agent 关键信息压缩方案设计</a></li><li><a href="/AgentNote/kdd2026/新增TaskContextPack落地方案.html" class="sidebar-link">Task Context Pack 落地实施方案</a></li><li><a href="/AgentNote/kdd2026/5月15日Task错误分析.html" class="active sidebar-link">/kdd2026/5月15日Task错误分析.html</a></li><li><a href="/AgentNote/kdd2026/DOCKER适配报告.html" class="sidebar-link">KDD Cup 2026 Docker 评测适配报告</a></li><li><a href="/AgentNote/kdd2026/DOCSAGE优化预案.html" class="sidebar-link">DocSage 启发的 DataAnalysis 非结构化文档处理优化方案</a></li><li><a href="/AgentNote/kdd2026/DOCSAGE落地方案.html" class="sidebar-link">DocSage Structured Doc Optimization Plan</a></li><li><a href="/AgentNote/kdd2026/wjb-1的分支合并计划（已作废）.html" class="sidebar-link">WJB Context/Python 优化与 DataAnalysis 整合方案</a></li><li><a href="/AgentNote/kdd2026/file-change-notes/" class="sidebar-link">关键文件改动说明</a></li></ul></section></li></ul> </aside> <main class="page"> <div class="theme-default-content content__default"><p>这 4 个新增失败不是同一个原因：</p> <p>task_199：计划阶段把 “Riverside-related school districts” 扩大成了 district_name LIKE '%Riverside%' OR county_name LIKE '%Riverside%'，多返回 60 行。
+task_249：题意中 “up votes” 应该取 db_users_users.upvotes，新 run 错取了 json_posts.score。
+task_303：计算逻辑正确，但最终把 52.17391304347826 四舍五入成 52.17。
+task_415：Doc structuring 误把 doc/races.md 抽成医学 lab schema 的空表 doc_races，导致执行阶段围绕空 doc 表反复空转，最终没提交答案。
+Task 199</p> <p>题目：列出 Riverside-related school districts 中 SAT math 平均分超过 400 的学校名和 funding type。</p> <p>旧 run 正确 SQL：</p> <p>WHERE T1.district_name LIKE '%Riverside%'
+AND T2.AvgScrMath &gt; 400
+返回 6 行，和 gold 一致。</p> <p>新 run 第 1 步先查：</p> <p>SELECT DISTINCT district_name
+FROM csv_frpm
+WHERE district_name LIKE '%Riverside%' OR county_name LIKE '%Riverside%'
+第 7 步最终也用了：</p> <p>WHERE (T1.district_name LIKE '%Riverside%' OR T1.county_name LIKE '%Riverside%')
+AND T2.avgscrmath &gt; 400
+这把整个 Riverside County 的学校都纳入了，而不是只要 district name 含 Riverside 的 school district，结果从 6 行膨胀到 60 行。</p> <p>根因：plan 阶段过度扩展了 “Riverside-related school districts”。题目说的是 school districts，过滤应落在 district_name，新 plan 擅自加入 county_name。</p> <p>项目建议：</p> <p>context_pack.py 对 “X-related school districts” 这类短语生成 filter contract：优先 district_name LIKE '%X%'，不要自动扩大到 county_name。
+langgraph_agent.py answer validation 增加异常行数膨胀 warning：同一任务中如果候选 SQL 从 6 行变成 60 行，且新增条件是 OR county_name，应提示“过滤范围被扩大”。
+Task 249</p> <p>题目：What is the average of the up votes and the average user age for users creating more than 10 posts?</p> <p>gold 和旧 run 都是：</p> <p>AVG(u.upvotes), AVG(u.age)
+FROM db_users_users u
+JOIN (
+SELECT owneruserid
+FROM json_posts
+GROUP BY owneruserid
+HAVING COUNT(*) &gt; 10
+) p ON u.id = p.owneruserid
+旧结果：</p> <p>182.2832618025751, 34.083333333333336
+新 run 第 2 步用了：</p> <p>SELECT AVG(p.Score) as avg_up_votes, AVG(u.Age) as avg_user_age
+FROM db_users_users u
+INNER JOIN json_posts p ON u.Id = p.OwnerUserId
+WHERE u.Id IN (
+SELECT OwnerUserId
+FROM json_posts
+GROUP BY OwnerUserId
+HAVING COUNT(*) &gt; 10
+)
+结果变成：</p> <p>3.293011975140215, 35.26408063822672
+这里错在两点：</p> <p>up votes 被理解成 post score，即 json_posts.score。
+join 到 posts 后对每个 post 行求平均，导致 u.age 也被按 post 数重复加权，变成 35.264，而不是对用户集合求平均。
+知识文件明确写了：</p> <p>Users: UpVotes/DownVotes: Count of upvotes and downvotes received by the user.
+Posts: Score: Rating score of the post.
+根因：新 plan 把 “users creating more than 10 posts” 里的 posts 当成了平均对象，实际 posts 只用于筛选用户集合；最终平均对象仍是 users 表字段。</p> <p>项目建议：</p> <p>context_pack.py 增加聚合对象识别：average of X and average user age for users ... 中，X 和 user age 同属 user-level metric，posts 子句只生成 filter subquery。
+对 up votes / down votes 建立低风险 schema grounding：若 users 表有 upvotes，posts 表只有 score，优先 users.upvotes，禁止把 posts.score 改名为 up votes。
+validation 增加 grain 检查：如果最终平均的是 user-level 字段，但 SQL join 到 detail posts 表后直接 AVG(u.age)，应提示可能发生一对多重复加权。
+Task 303</p> <p>题目：European Grand Prix 中 hosted in Germany 的百分比。</p> <p>新旧 run 的计数都正确：</p> <p>total_european_gp = 23
+germany_count = 12
+正确值：</p> <p>12 / 23 * 100 = 52.17391304347826
+旧 run 输出完整精度：</p> <p>52.17391304347826
+新 run 第 4 步 Python 明确做了四舍五入：</p> <p>percentage = (12 / 23) * 100
+print(f&quot;{percentage:.2f}&quot;)
+最终输出：</p> <p>52.17
+根因：不是查表错，也不是公式错，是最终格式化错。题目没有要求保留两位小数，benchmark gold 使用完整浮点表达式结果，当前 validation 没有拦截“无要求的 rounding”。</p> <p>项目建议：</p> <p>langgraph_agent.py prompt 增加规则：除非题目明确要求 round / decimal places，否则不要格式化或四舍五入数值。
+answer validation 增加 warning：如果最近 SQL/Python 有更高精度数值，但 answer 使用更短小数，提示“possible unintended rounding”。
+对 percentage / ratio contract 增加 precision_policy: preserve_full_precision_unless_requested。
+Task 415</p> <p>题目：2009 Singapore Grand Prix champion 的 constructor reference name 和 website。</p> <p>旧 run 虽然走了很多步，但关键链路正确：</p> <p>读 doc/races.md 找到：
+Singapore Grand Prix (Race ID: 14)
+查 results.db：
+SELECT r.constructorId, r.positionOrder
+FROM results r
+WHERE r.raceId = 14 AND r.positionOrder = 1
+得到 constructorId = 1
+读 constructors.json，输出：
+mclaren, http://en.wikipedia.org/wiki/McLaren
+新 run 的问题从 context pack 就开始了：</p> <p>doc_schema_hypotheses: [
+{
+&quot;name&quot;: &quot;doc_races&quot;,
+&quot;source_path&quot;: &quot;doc/races.md&quot;,
+&quot;entity&quot;: &quot;laboratory&quot;,
+&quot;columns&quot;: [&quot;patient_id&quot;, &quot;lab_field&quot;, &quot;lab_value&quot;, &quot;status_text&quot;]
+}
+]
+这明显错了。races.md 是 Formula 1 race dossier，却被抽成了医学 laboratory schema。</p> <p>随后 unified DB 中出现空表：</p> <p>doc_races(patient_id, lab_field, lab_value, status_text, ...)
+rows: []
+新 trace 多次查询空表：</p> <p>SELECT * FROM doc_races LIMIT 5
+SELECT * FROM doc_races LIMIT 10
+还尝试了不存在的结构：</p> <p>no such table: csv_races
+no such column: T1.year
+no such table: races
+最终 30 步内没有回到旧 run 的有效路径：直接 read doc/races.md，抽 Race ID: 14，再查 results 和 constructors。</p> <p>根因：</p> <p>Doc schema planner 把 Formula 1 races.md 误分类成 lab 文档。
+空抽取表被写入 unified DB 后，agent 误以为 doc 已结构化可查。
+doc_extraction_requirements 被加入 filters_must_apply，强化了错误方向。
+缺少 fallback：doc table 为空时，应回退到 read_doc / regex evidence，而不是继续查空表。
+项目建议：</p> <p>doc_structuring.py 修正 schema discovery：races.md + Formula 1 knowledge + question 中 Grand Prix/raceId/year 应生成 race schema：
+doc_races(race_id, race_name, year, url, evidence)
+不能落到 medical/laboratory schema。
+unified_db.py / doc import 增加空表降权：doc extracted table row_count=0 时，不应作为高可信 unified table 暴露给 planning。
+context_pack.py 不要把所有 doc requirements 直接塞进 filters_must_apply；只有抽取 schema 和题目字段匹配、且 coverage &gt; 0 时才强制。
+langgraph_agent.py 增加 doc fallback：连续两次查询 doc extracted table 为空后，自动提示改用 read_doc 读取原文证据。
+共性问题</p> <p>这批新增失败说明近期优化引入了几个系统性副作用：</p> <p>Context Pack/plan 更强后，错误先验也会更强。
+task_415 最明显，错误 doc schema 一旦进入 prompt 和 unified DB，模型会围绕错误结构空转。</p> <p>缺少 answer grain/source/precision 的硬约束。
+task_249 是 grain 错，task_303 是 precision 错，task_199 是 filter scope 错。</p> <p>validation 仍偏“表形状校验”，不足以发现语义层错误。
+这些任务的输出列数大多没问题，但 value source、过滤范围、聚合粒度或数值精度错了。</p></div> <footer class="page-edit"><!----> <div class="last-updated"><span class="prefix">最后更新:</span> <span class="time">5/15/2026, 2:03:21 PM</span></div></footer> <div class="page-nav"><p class="inner"><span class="prev">
+      ←
+      <a href="/AgentNote/kdd2026/新增TaskContextPack落地方案.html" class="prev">
+        Task Context Pack 落地实施方案
+      </a></span> <span class="next"><a href="/AgentNote/kdd2026/DOCKER适配报告.html">
+        KDD Cup 2026 Docker 评测适配报告
+      </a>
+      →
+    </span></p></div> </main></div><div class="global-ui"></div></div>
+    <script src="/AgentNote/assets/js/app.97963db6.js" defer></script><script src="/AgentNote/assets/js/2.280bba0b.js" defer></script><script src="/AgentNote/assets/js/1.91a5ad25.js" defer></script><script src="/AgentNote/assets/js/27.6dc672cb.js" defer></script>
+  </body>
+</html>
