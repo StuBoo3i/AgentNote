@@ -122,3 +122,55 @@ model answer
 - 普通单值题仍会保留单列检查，例如 `How many ...`、无第二输出槽的 `What is ...`。
 - 多输出识别依赖题目文本中的明确输出动词/名词，避免因为普通 `and` 引入过强先验。
 - header 名称仍不参与最终评分，guard 的主要作用是保护 value vector 结构完整。
+
+## 2026-05-15 追加记录：顶层 `sql/code` 容错与 `execute_doc_sql` 解析接入
+
+### 为什么修改
+
+本次失败 trace 中，工具调用格式问题仍然是重要噪声源：
+
+- `task_180` 曾输出 `{"action":"execute_unified_sql","sql":"SELECT ..."}`，缺少 `action_input.sql`。
+- `task_352/task_396` 多次出现空 `execute_python` 或顶层 `code` 的变体。
+- 新增 `execute_doc_sql` 后，如果它不复用 SQL block 解析逻辑，就会重新踩一遍 unified SQL 的老问题。
+
+### 修改成了什么运行逻辑
+
+`parse_model_step()` 现在在读取 payload 后会做一次顶层字段兜底：
+
+- 若 action 是 SQL 工具，且 `action_input.sql` 缺失，但顶层有 `sql`，自动搬运到 `action_input.sql`。
+- 若 action 是 `execute_python`，且 `action_input.code` 缺失，但顶层有 `code`，自动搬运到 `action_input.code`。
+
+`_normalize_action_input()` 也同步扩展：
+
+- `execute_doc_sql` 与 `execute_context_sql`、`execute_unified_sql` 共享 SQL 字符串/fenced SQL block 解析。
+
+### 对项目流程的影响
+
+修改前：
+
+```text
+model raw json
+  -> 必须严格 action_input.sql / action_input.code
+  -> 否则 parse error / tool error
+```
+
+修改后：
+
+```text
+model raw json
+  -> 顶层 sql/code 兜底搬运
+  -> 统一进入 action_input
+  -> SQL/doc SQL/Python 工具按既有路径执行
+```
+
+### 对任务执行改善了什么
+
+- `task_180`：顶层 `sql` 不再直接触发 `"'sql'"` 类错误。
+- `task_352/task_396`：新增 `execute_doc_sql` 后可以稳定解析 fenced SQL 或字符串 SQL。
+- 新旧 agent path 的工具格式兼容性更高，减少“题意对了但 JSON 形状错了”的无效 step。
+
+### 边界
+
+- 这是容错，不是自由格式解析；仍要求 action 和 JSON 主体正确。
+- 空 `execute_python` 本身没有被自动补代码，只是顶层 `code` 变体能被接受。
+- 复杂 malformed JSON 仍依赖原有 `json_repair` 和 fenced block 提取逻辑。

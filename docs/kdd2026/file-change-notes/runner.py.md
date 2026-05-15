@@ -119,3 +119,75 @@ context_pack_char_budget
 - 临时 JSON 文件位于 `tempfile.TemporaryDirectory()` 中，父进程读取后自动清理。
 - 如果子进程成功但结果文件缺失，会返回明确 failure payload。
 - 该修改只改变 IPC 方式，不改变 benchmark 输出目录结构。
+
+## 2026-05-15 追加记录：统一创建 skill-aware ToolRegistry
+
+### 为什么修改
+
+Phase 2 接入动态 skills 后，工具注册不再是固定无参创建。`ToolRegistry` 需要知道：
+
+- skill source dirs。
+- 是否递归发现 `SKILL.md`。
+- skill script timeout。
+
+如果仍在 runner 中直接调用 `create_default_tool_registry()`，则 task 运行时无法读取 `AgentParam.yaml`/config 中的 skill 配置。
+
+### 修改成了什么运行逻辑
+
+新增 helper：
+
+```python
+def _create_tool_registry(config: AppConfig) -> ToolRegistry:
+    return create_default_tool_registry(
+        skill_source_dirs=config.skills.source_dirs,
+        skill_recursive_discovery=config.skills.recursive_discovery,
+        skill_script_timeout_seconds=config.skills.script_timeout_seconds,
+    )
+```
+
+替换原先直接调用：
+
+```python
+create_default_tool_registry()
+```
+
+的路径，包括：
+
+- `_run_single_task_core()`
+- `run_benchmark()` 单 worker 共享 tools
+- `run_official_benchmark()` 单 worker 共享 tools
+
+创建 `LangGraphAgentConfig` 时新增传入：
+
+```python
+skill_enabled=config.skills.enabled
+skill_source_dirs=config.skills.source_dirs
+skill_recursive_discovery=config.skills.recursive_discovery
+skill_include_builtin=config.skills.include_builtin_library
+skill_max_recommendations=config.skills.max_recommendations
+```
+
+### 对项目流程的影响
+
+运行链路变为：
+
+```text
+load_app_config()
+  -> config.skills
+  -> runner._create_tool_registry(config)
+  -> ToolRegistry(list_skills/get_skill_resource/execute_skill_script_file)
+  -> LangGraphReActAgent(skill middleware)
+```
+
+benchmark、run-task、official benchmark 三种入口使用同一套 skill 配置。
+
+### 对任务执行改善了什么
+
+- 保证本地 dev 和 Docker eval 模式使用一致的 skill runtime。
+- 让 skill 脚本 timeout 可控，避免辅助脚本卡住任务。
+- 让动态 skill 推荐与工具可执行能力使用同一份 source dirs，避免 prompt 推荐了 skill 但工具找不到脚本。
+
+### 边界
+
+- 如果上层显式传入 `tools`，runner 仍尊重外部传入的 registry，不强制替换。
+- 多 worker 场景中每个 subprocess 仍按 config 自行创建 registry，避免跨进程共享不可序列化对象。

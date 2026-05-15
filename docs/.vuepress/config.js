@@ -98,6 +98,9 @@ module.exports = {
             'CONTEXT_PACK_OPTIMIZATION_LANDING_PLAN',
             'TASK_25_80_163_218_257_415_FAILURE_FIX_IMPLEMENTATION_PLAN',
             'KDD2026_DOCKER_ADAPTATION_REPORT',
+            'DOCSAGE_PLAN',
+            'DOCSAGE_STRUCTURED_DOC_OPTIMIZATION_PLAN',
+            'WJB_CONTEXT_PY_INTEGRATION_PLAN',
             'task-failure-analysis/',
             'file-change-notes/'
           ]

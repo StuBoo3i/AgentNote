@@ -82,6 +82,24 @@
 - 上传时间：`2026-05-14`
 - 简介：对照官方评测 PDF 说明容器双模式改造、输入输出规范适配和提交打包流程。
 
+### [DocSage 启发的 DataAnalysis 非结构化文档处理优化方案](./DOCSAGE_PLAN.md)
+
+- 来源：`混合整理`
+- 上传时间：`2026-05-15`
+- 简介：基于 DocSage 思路设计文档结构化处理路径，将长文本推理转为可控的关系化抽取与查询流程。
+
+### [DocSage Structured Doc Optimization Plan](./DOCSAGE_STRUCTURED_DOC_OPTIMIZATION_PLAN.md)
+
+- 来源：`混合整理`
+- 上传时间：`2026-05-15`
+- 简介：细化 doc schema 发现、候选 tuple 抽取、evidence 跟踪和 unified SQLite 接入的工程落地方案。
+
+### [WJB Context/Python 优化与 DataAnalysis 整合方案](./WJB_CONTEXT_PY_INTEGRATION_PLAN.md)
+
+- 来源：`混合整理`
+- 上传时间：`2026-05-15`
+- 简介：梳理 WJB 版本中可迁移的 compact memory 与 dynamic skills 能力，并给出与现有项目的兼容整合边界。
+
 ### [Task 失败案例分析（子栏目）](./task-failure-analysis/)
 
 - 来源：`混合整理`

@@ -211,3 +211,220 @@ task_context_pack.answer_contract
 - header 不参与评分，因此 header 不匹配默认只提示，不硬拒绝。
 - 行数 warning 只在最近 tabular observation 与 answer columns 有明显对应关系时触发。
 - SQL NULL 检查只识别明显 `ORDER BY ... LIMIT 1` 场景，不解析任意复杂 SQL。
+
+## 2026-05-15 追加记录：WJB compact working memory 与动态 skill middleware
+
+### 为什么修改
+
+前一次全量 benchmark 中出现模型请求 400：
+
+## 2026-05-15 追加记录：接入 doc schema plan、重复错误提示与 near-max-steps 收束
+
+### 为什么修改
+
+这次 DocSage 整合之后，仅有工具还不够。若 LangGraph 的 planning/execution prompt 不显式要求使用 doc table，模型仍会沿旧路径反复：
+
+```text
+read_doc -> execute_python -> 语法错/空代码 -> 再读 doc
+```
+
+同时，`task_180/task_352/task_396` 的 trace 还显示两个执行层问题：
+
+- 同类错误重复出现，但 agent 没有被提醒停止重复错误动作。
+- 接近 `max_steps` 时，明明已有候选结果，却继续探索，最终没有 `answer`。
+
+### 修改成了什么运行逻辑
+
+本次在 `langgraph_agent.py` 中新增三组机制。
+
+#### 1. plan prompt 显式纳入 doc extraction 要求
+
+`_build_plan_messages()` 现在会在 prompt 中加入：
+
+- 如果 `task_context_pack.doc_extraction_requirements` 非空，plan 必须明确：
+  - 要构建哪些 doc table
+  - 用哪些 join key
+  - 哪些字段只是 filter
+  - 最终答案的 row grain
+- 不允许忽略 filter-only doc source
+
+这让高层计划从“知道有 markdown 文件”升级为“知道必须先把 markdown 变成可 join 表”。
+
+#### 2. bootstrap observation 新增 `doc_schema_plan`
+
+在 `_node_profile_context()` 中，如果 Context Pack 里已有：
+
+```text
+doc_schema_hypotheses
+doc_extraction_requirements
+unresolved_schema_questions
+```
+
+则会追加一个新的 bootstrap observation：
+
+```text
+tool = doc_schema_plan
+```
+
+这样 trace 中可以直接看到 doc schema 假设，而不是只看到 `task_context_pack` 的大 JSON。
+
+#### 3. 执行 prompt 收紧错误循环和收尾行为
+
+新增 `_repeated_error_notice()`：
+
+- 回看最近若干 step。
+- 如果同一类 tool error 重复出现至少 2 次，就在 system prompt 中追加警告：
+  - 不要重复同一个 malformed action
+  - 应改用其他工具、修正格式，或直接提交已有候选答案
+
+同时在 `_build_messages()` 中加入 near-limit 提示：
+
+- 剩余 step <= 2 时
+- 若已有候选 scalar/table observation
+- 优先 `answer`，不要再做探索性工具调用
+
+### 对项目流程的影响
+
+修改前：
+
+```text
+profile_context
+  -> task_context_pack
+  -> high_level_plan
+  -> ReAct loop
+```
+
+修改后：
+
+```text
+profile_context
+  -> unified_db_profile
+  -> task_context_pack
+  -> doc_schema_plan bootstrap observation
+  -> high_level_plan 显式写 doc table/join/filter
+  -> ReAct loop 带重复错误抑制和 near-limit 收束
+```
+
+### 对任务执行改善了什么
+
+- `task_352/task_396/task_418/task_420`：更容易走 `build_doc_tables -> SQL`，而不是全文 regex。
+- `task_180`：顶层 `sql` 或空 `execute_python` 重复出现时，会收到更强的停损提示。
+- 所有“已查到结果但没提交”的任务，临近 `max_steps` 时更有机会收敛到 `answer`。
+
+### 边界
+
+- 当前仍是 prompt-level 约束，不是硬状态机，不会直接屏蔽某个工具。
+- repeated error 识别只做轻量 signature 比较，不做复杂异常分类。
+- near-limit 提示不会凭空生成答案，只在已有候选 observation 时提高提交概率。
+
+```text
+Range of input length should be [1, 258048]
+```
+
+根因是 LangGraph ReAct 阶段持续注入完整历史、完整 observation、schema 和 context pack，长任务容易让 prompt 超过模型输入上限。
+
+同时 WJB 版本提供了动态 skill library，但当前项目只有静态 skill 推荐，无法读取 `SKILL.md` 或执行 skill 脚本。因此需要在 LangGraph 层接入两件事：
+
+- compact working memory：减少 ReAct prompt 长度。
+- SkillsMiddleware：从配置目录动态加载和推荐 skills。
+
+### 修改成了什么运行逻辑
+
+新增 prompt 模式配置：
+
+```python
+prompt_memory_mode: str = "compact_state"
+prompt_system_mode: str = "minimal"
+```
+
+`_build_messages()` 现在按模式分发：
+
+```text
+compact_state -> _build_compact_state_messages()
+full_history  -> _build_full_history_messages()
+```
+
+`compact_state` 下 prompt 主要包含：
+
+- minimal system prompt。
+- task prompt。
+- compact tool schema。
+- working memory。
+- current goal。
+- 短的执行约束。
+
+新增 `WorkingMemory`，保存：
+
+```text
+task_question
+context_schema_summary
+answer_contract
+current_plan
+completed_steps
+failed_steps
+known_variables
+latest_observation
+current_goal
+warnings
+errors
+repair_state
+```
+
+每一步 tool 执行后用 `_update_working_memory_after_step()` 压缩记录，而不是把完整历史无限塞回 prompt。
+
+接入动态 skills：
+
+```python
+from data_agent_baseline.agents.skill_middleware import SkillsMiddleware, create_skills_middleware
+```
+
+初始化时创建 middleware：
+
+```python
+self._skills_middleware = create_skills_middleware(...)
+```
+
+`profile_context` 阶段：
+
+```text
+context_profile -> skill middleware match -> recommended skills
+```
+
+推荐结果仍写入 bootstrap observation 和 metadata。
+
+### 对项目流程的影响
+
+修改前：
+
+```text
+profile_context
+  -> static recommend_skills()
+  -> build_plan
+  -> ReAct prompt with trimmed full history
+```
+
+修改后：
+
+```text
+profile_context
+  -> dynamic SkillsMiddleware
+  -> build_plan
+  -> initialize working_memory
+  -> ReAct prompt with compact_state
+  -> each tool step updates working_memory
+```
+
+这不会新增 LLM 调用，也不改变 LangGraph 节点拓扑。
+
+### 对任务执行改善了什么
+
+- 大幅降低长 trace/大 schema 任务触发输入长度超限的概率。
+- 当前目标、answer_contract、最近 observation 被显式保留，减少压缩后丢失最终答案契约。
+- 动态 skill 推荐让模型看到更贴近当前文件类型的处理方式，例如 tabular、nested JSON、DuckDB query。
+- `metadata.working_memory` 和 `metadata.recommended_skills` 让失败分析能判断 plan 是否锁定答案、执行是否偏离。
+
+### 边界
+
+- compact prompt 不自动改写答案，只改变上下文组织方式。
+- `full_history` 和 `legacy` 仍可配置回退。
+- skills 只是推荐和工具可用性增强，不强制模型调用；CSV/JSON/DB 主路径仍优先 unified SQL。

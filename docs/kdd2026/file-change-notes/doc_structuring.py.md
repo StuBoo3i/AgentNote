@@ -1,0 +1,120 @@
+# doc_structuring.py 新增说明
+
+## 对应文件
+
+```text
+/nfsdat/home/jwangslm/DataAnalysis/src/data_agent_baseline/tools/doc_structuring.py
+```
+
+## 2026-05-15 新增记录：DocSage 启发的 query-specific 文档结构化工具
+
+### 为什么新增
+
+当前项目的统一 DB 只覆盖 CSV/JSON/DB，而很多失败任务的关键事实在 `doc/*.md` 中：
+
+- `task_420`：`legalities.md` 提供 commander/legal 过滤和 `cards_id`。
+- `task_352`：`budget.md` 提供 `amount/category/event_id`。
+- `task_396`：`superhero.md` 提供 `hero_id/height/publisher code`。
+- `task_418`：`Patient.md` 和 `Laboratory.md` 提供 patient-level 年龄和 lab 记录。
+
+这些任务失败的共同点不是“模型不会算”，而是“模型没有稳定地把文档转成可 join 的表”，只能反复读长文本和手写正则。
+
+### 修改成了什么运行逻辑
+
+`doc_structuring.py` 提供五个核心入口：
+
+- `plan_doc_schema(task, context_pack=None, unified_schema=None)`
+- `extract_doc_records(task, doc_schema_plan=None)`
+- `build_doc_tables(task, doc_schema_plan=None, force=False)`
+- `inspect_doc_tables(task)`
+- `execute_doc_sql(task, sql, limit=200)`
+
+#### 1. schema planning
+
+根据：
+
+- `task.question`
+- doc 文件名
+- 文本 sample
+- unified schema
+
+推断 query-specific doc table，例如：
+
+- `doc_legalities(legality_id, cards_id, format, status)`
+- `doc_budget(budget_id, category, amount, spent, remaining, event_id)`
+- `doc_superhero(hero_id, name, height_cm, publisher_id)`
+- `doc_patient(patient_id, sex, birth_year, age)`
+- `doc_laboratory(patient_id, lab_field, lab_value, status_text)`
+
+并生成：
+
+- `join_keys`
+- `uncertainties`
+
+#### 2. 抽取逻辑
+
+抽取器不是 task-id 特判，而是基于通用启发式：
+
+- markdown heading / paragraph chunking
+- `rec...` 型 Airtable 风格 ID
+- 数字 ID / patient ID / cards_id
+- 数值字段 pattern：amount / spent / remaining / height / lab value
+- 类别字段 pattern：format / status / category / sex
+- link 字段 pattern：event_id / publisher_id / cards_id
+
+每行都附带：
+
+- `_source_path`
+- `_chunk_id`
+- `_evidence`
+- `_confidence`
+
+#### 3. SQLite 化
+
+抽取结果写入：
+
+```text
+/tmp/dabench_unified/<context_hash>/<task_id>/doc_structured.db
+```
+
+并维护：
+
+- `_doc_source_files`
+- `_doc_field_catalog`
+
+所以 agent 后续可以直接用 SQL 查 doc tables，而不是再回到全文文本。
+
+### 对项目流程的影响
+
+新增一条与 unified DB 并行但可汇合的流程：
+
+```text
+doc/*.md
+  -> plan_doc_schema()
+  -> extract_doc_records()
+  -> build_doc_tables()
+  -> inspect_doc_tables()/execute_doc_sql()
+  -> 可进一步并入 unified DB
+```
+
+它把原先的“长文本阅读任务”改造成“候选关系表 + evidence”的结构化任务。
+
+### 对任务执行改善了什么
+
+- `task_420`：能显式产出 `doc_legalities`，把 commander/legal/card_id 从文本里抽出来。
+- `task_352`：能产出 `doc_budget`，把 Advertisement budget 和 event link 结构化。
+- `task_396`：能产出 `doc_superhero`，把分散 section 中的 hero_id / publisher_id / height 聚合起来。
+- `task_418`：能分别结构化 patient demographic 和 laboratory facts，为后续年龄/lab join 打基础。
+
+### 风险控制
+
+- 抽取结果是 candidate evidence，不等同于 ground truth。
+- 所有行都保留 `_evidence` 和 `_confidence`，供后续验证。
+- schema 推断和抽取逻辑都不绑定 task id。
+- 如果抽取失败，不会破坏原有 CSV/JSON/DB 流程。
+
+### 边界
+
+- 当前规则优先覆盖本项目失败案例里高频的 markdown 叙述模式，不是通用 IE 系统。
+- `superhero.md` 这种跨 section 聚合文档目前只做到启发式合并，覆盖率仍需后续验证。
+- 医学 normal/abnormal 阈值不在本模块硬编码；这里只抽记录和定性文本，不做高置信诊断判断。

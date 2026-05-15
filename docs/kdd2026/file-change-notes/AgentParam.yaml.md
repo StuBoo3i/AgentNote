@@ -59,3 +59,76 @@ Task Context Pack 现在可以通过配置关闭或调整 prompt 预算，便于
 
 - `agent.max_steps` 仍以 `configs/alibaba.yaml` 中的 `agent.max_steps=36` 为准。
 - `AgentParam.yaml` 的 LangGraph 参数作为默认/集中参数来源；如果任务配置文件里显式写了 `langgraph` 段，会优先使用任务配置文件的值。
+
+## 2026-05-15 追加记录：WJB compact prompt 与动态 skills 配置
+
+### 为什么修改
+
+WJB 整合后新增两类可调能力：
+
+- compact working memory / minimal system prompt，用于降低长 trace、长 schema、长 observation 导致的模型输入超限风险。
+- 动态 skill library 和 skill script runtime，用于在 unified DB 之外提供可复用的文件级 profiling、DuckDB 查询、JSON flatten 等确定性辅助能力。
+
+这些能力必须通过集中配置控制，避免写死在代码中，也方便在回归测试时快速关闭。
+
+### 修改成了什么运行逻辑
+
+在 `langgraph` 段新增：
+
+```yaml
+prompt_memory_mode: compact_state  # compact_state | full_history
+prompt_system_mode: minimal        # minimal | legacy
+```
+
+运行含义：
+
+- `compact_state`：ReAct 阶段不再把完整历史无限注入 prompt，而是注入压缩后的 working memory、当前目标、关键工具摘要。
+- `full_history`：保留旧执行方式，方便回退。
+- `minimal`：使用更短的系统提示和工具 schema。
+- `legacy`：使用旧版长 system prompt。
+
+新增 `skills` 段：
+
+```yaml
+skills:
+  enabled: true
+  include_builtin_library: true
+  recursive_discovery: true
+  max_recommendations: 6
+  script_timeout_seconds: 120
+  source_dirs:
+    - src/data_agent_baseline/skills
+    - skills
+```
+
+运行含义：
+
+- 默认启用内置和文件发现的 skills。
+- 从项目内置目录和外部 `skills` 目录发现 `SKILL.md`。
+- 每个任务最多推荐 6 个 skill。
+- skill 脚本最多运行 120 秒。
+
+### 对项目流程的影响
+
+配置链路变为：
+
+```text
+AgentParam.yaml / configs/*.yaml
+  -> load_app_config()
+  -> AppConfig.langgraph + AppConfig.skills
+  -> runner.py
+  -> LangGraphAgentConfig + ToolRegistry
+```
+
+这让 prompt 压缩和 skill runtime 都可由配置开关控制。
+
+### 对任务执行改善了什么
+
+- 降低 DashScope/Qwen 等模型因输入过长触发 `Range of input length` 错误的概率。
+- 在复杂文件任务中，模型可使用确定性 skill 脚本做表结构检查、JSON 展平、DuckDB 查询，减少手写 Python 的不稳定性。
+- 保留 `full_history`/`legacy` 回退路径，避免新 prompt 策略对个别任务造成不可控影响。
+
+### 边界
+
+- `skills.enabled=true` 只是暴露和推荐 skills，不会强制模型必须调用 skill。
+- CSV/JSON/DB 的跨源 join/filter/aggregation 仍优先使用 unified DB；skills 是补充能力。

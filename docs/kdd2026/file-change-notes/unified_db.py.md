@@ -237,3 +237,74 @@ planner 在 `inspect_unified_schema` 和 `task_context_pack.answer_contract.join
 - join candidate 只是候选，不直接执行 join。
 - 没有采样重叠时不会标成 high confidence，避免过强先验。
 - 表名和字段名必须能提供实体线索；完全无语义命名的列不会被强行关联。
+
+## 2026-05-15 追加记录：将 doc-extracted tables best-effort 接入 unified DB
+
+### 为什么修改
+
+DocSage 论文强调把非结构化文档先转成关系表，再用 SQL 做多跳推理。当前 unified DB 只导入 CSV/JSON/DB，导致：
+
+- `doc/legalities.md` 这类 filter-only source 无法和 `cards.db` join。
+- `doc/superhero.md` 里的 height/publisher code 无法和 `publisher.json` 稳定 join。
+- `doc/budget.md` 里的 amount/category/event_id 只能靠模型手写 regex 拼接。
+
+因此需要让 unified DB 能看到 doc 抽取出的候选表，但不能破坏原有结构化数据流程。
+
+### 修改成了什么运行逻辑
+
+新增 `_copy_doc_extracted_tables()`：
+
+```text
+build_unified_db(task, force=True)
+  -> 导入 CSV/JSON/DB
+  -> build_doc_tables(task, force=force)
+  -> 将 doc_structured.db 中的 doc_* 表复制进 unified.db
+  -> _source_files 记录 source_type=doc_extracted
+  -> _field_catalog 记录 doc 表字段
+  -> _join_candidates 继续基于字段和样本值推断 join
+```
+
+`inspect_unified_schema()` 现在会为 doc 表补充：
+
+```text
+source_path
+source_type = doc_extracted
+extraction_note
+```
+
+如果 doc 抽取失败，只写入：
+
+```text
+source_type = doc_extracted_error
+```
+
+并继续保留原 CSV/JSON/DB unified DB。
+
+### 对项目流程的影响
+
+统一查询入口从：
+
+```text
+CSV/JSON/DB -> unified.db
+```
+
+扩展为：
+
+```text
+CSV/JSON/DB + doc-extracted candidate tables -> unified.db
+```
+
+模型可以直接用 `inspect_unified_schema` 看到 doc 表，也可以用 `execute_unified_sql` 做跨源 join。
+
+### 对任务执行改善了什么
+
+- `task_420`：`doc_legalities.cards_id` 可以 join `cards.id`，commander/legal 过滤不再只能停留在 markdown 阅读阶段。
+- `task_352`：`doc_budget` 可以和 `event.csv` 通过 event id 做 ratio 计算。
+- `task_396`：`doc_superhero.publisher_id` 可以和 `publisher.json` join。
+- 混合 doc + DB/CSV/JSON 的任务减少 Python 手写解析和中间结果丢失。
+
+### 边界
+
+- doc 表是候选抽取结果，带 evidence/confidence，不等同于人工标注真值。
+- doc 抽取失败不影响原 unified DB。
+- `_join_candidates` 仍是启发式，需要模型或后续 SQL 验证。

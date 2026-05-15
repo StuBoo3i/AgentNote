@@ -176,3 +176,80 @@ context/profile
 - header 大小写、列顺序不作为 scoring-critical 逻辑；真正关注的是数据行 value vector 是否完整。
 - 规则不绑定 task id，不读取 public gold。
 - 对低置信字段映射只提示验证，不强行覆盖执行路径。
+
+## 2026-05-15 追加记录：DocSage 启发的非结构化文档 schema discovery 与答案契约增强
+
+### 为什么修改
+
+结合 DocSage 论文和 `task_180/task_344/task_352/task_396/task_418/task_420` 的 trace 复盘，当前项目的 Context Pack 仍有三类缺口：
+
+- 只对 CSV/JSON/DB 做结构化 profile，`doc/*.md` 仍主要靠模型读全文和手写 Python/regex。
+- 计划阶段无法明确哪些 doc 是 filter-only source，例如 `legalities.md` 中的 commander/legal 过滤条件容易被执行阶段丢掉。
+- 一些关键题意模式没有稳定进入答案契约，例如 `per unit`、`how many times ... more than ...`、`percentage of ...`、`aren't 70 yet`。
+
+### 修改成了什么运行逻辑
+
+`build_task_context_pack()` 现在会调用 `plan_doc_schema()`，把 doc schema discovery 的结果写入 Task Context Pack：
+
+```text
+doc_schema_hypotheses
+doc_extraction_requirements
+unresolved_schema_questions
+```
+
+新增运行链路：
+
+```text
+context_profile + unified_db profile
+  -> build_task_context_pack()
+  -> infer_question_intent()
+  -> infer_answer_contract()
+  -> plan_doc_schema()
+  -> doc_extraction_requirements / unresolved_schema_questions
+  -> execution_plan / validation_checks
+```
+
+同时增强 `answer_contract`：
+
+```text
+expected_kind
+numerator
+denominator
+ratio
+filters_must_apply
+forbidden_projection_fields
+```
+
+新增低风险题意规则：
+
+- `per unit`：生成 derived metric，例如 `Price / Amount`，并要求 `Amount > 0`。
+- `how many times ... more than ...`：识别为 ratio/division，而不是 count。
+- `percentage/percent/proportion`：生成 numerator/denominator 契约。
+- `not 70 yet` / `aren't 70 yet` / `younger than 70`：映射为 `age < 70`。
+- 医学 `normal/abnormal`：如果没有阈值或范围证据，写入 unresolved warning，避免高置信硬编码。
+
+### 对项目流程的影响
+
+Context Pack 从“结构化文件摘要 + 题意提示”升级为“结构化文件 + doc schema hypotheses + 答案契约”的计划输入。
+
+对 LangGraph 的影响：
+
+- high-level plan 会看到 doc table 需求，而不是只看到 markdown 文件名。
+- ReAct prompt 能依据 `doc_extraction_requirements` 优先调用 doc structuring 工具。
+- answer validation 能检查必须使用的 filter term 和禁止投影字段。
+
+该修改不新增 LLM 调用，不读取 gold，不使用 task id 特判。
+
+### 对任务执行改善了什么
+
+- `task_180`：`per unit` 被固定为派生指标，避免把总价 `Price > 29` 当单位价。
+- `task_352`：`how many times ... more than ...` 被固定为 ratio，避免输出 `COUNT(*)`。
+- `task_396`：识别 `superhero.md` 需要结构化为 `hero_id/height_cm/publisher_id`。
+- `task_418`：识别 `Patient.md` + `Laboratory.md` 需要 patient-level join，并把 `aren't 70 yet` 转成 `age < 70`。
+- `task_420`：识别 `legalities.md` 是 filter-only source，要求 commander/legal 过滤必须进入最终查询。
+
+### 边界
+
+- doc schema hypotheses 是 deterministic hint，不直接保证抽取正确。
+- 医学阈值不做强先验；缺证据时只标记 unresolved。
+- `filters_must_apply` 和 `forbidden_projection_fields` 主要用于提示和 warning，不会硬阻断所有答案。

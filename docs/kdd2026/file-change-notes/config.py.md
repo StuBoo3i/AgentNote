@@ -103,3 +103,91 @@ load_app_config(config_path)
 
 - 当前没有把 `langgraph.max_steps` 接入，因为项目实际运行使用 `agent.max_steps`，这避免了配置冲突。
 - 配置文件中没有 `langgraph` 段时，会使用 `AgentParam.yaml` 中的默认 LangGraph 参数。
+
+## 2026-05-15 追加记录：读取 compact prompt 与 SkillsConfig
+
+### 为什么修改
+
+WJB 整合新增了 compact prompt 模式和动态 skill runtime。原 `AppConfig` 只有 dataset、agent、run、langgraph 基础参数，无法表达：
+
+- 当前 ReAct prompt 使用完整历史还是压缩 working memory。
+- system prompt 使用 minimal 还是 legacy。
+- 是否启用 skill library。
+- skill 从哪些目录发现。
+- skill 脚本执行超时是多少。
+
+因此需要扩展配置层，保证这些能力能通过 `AgentParam.yaml` 和具体 config 文件控制。
+
+### 修改成了什么运行逻辑
+
+新增默认 skill 目录：
+
+```python
+def _default_skills_source_dirs() -> tuple[Path, ...]:
+    return (
+        PROJECT_ROOT / "src" / "data_agent_baseline" / "skills",
+        PROJECT_ROOT / "skills",
+    )
+```
+
+新增 `SkillsConfig`：
+
+```python
+class SkillsConfig:
+    enabled: bool = True
+    include_builtin_library: bool = True
+    recursive_discovery: bool = True
+    max_recommendations: int = 6
+    script_timeout_seconds: int = 120
+    source_dirs: tuple[Path, ...]
+```
+
+`LangGraphRuntimeConfig` 增加：
+
+```python
+prompt_memory_mode: str = "compact_state"
+prompt_system_mode: str = "minimal"
+```
+
+并增加校验函数：
+
+```python
+_normalize_prompt_memory_mode(...)
+_normalize_prompt_system_mode(...)
+_path_list_value(...)
+```
+
+配置优先级保持：
+
+```text
+代码默认值
+  -> AgentParam.yaml
+  -> configs/*.yaml 显式覆盖
+```
+
+### 对项目流程的影响
+
+`load_app_config()` 现在返回：
+
+```text
+AppConfig(
+  dataset=...,
+  agent=...,
+  run=...,
+  langgraph=...,
+  skills=...
+)
+```
+
+后续 `runner.py` 使用 `config.skills` 创建 skill-aware registry，并把 `config.langgraph.prompt_*` 传给 LangGraph agent。
+
+### 对任务执行改善了什么
+
+- 能在不改代码的情况下切换 `compact_state/full_history`，用于排查长上下文问题。
+- 能按任务配置关闭 skills，避免某些回归测试受新增工具影响。
+- skill source dirs 支持外部目录，后续可以增量放入自定义 skill，不需要修改包内代码。
+
+### 边界
+
+- `agent.max_steps` 仍继续来自 `agent.max_steps`，没有用 `langgraph.max_steps` 覆盖。
+- `SkillsConfig` 只负责配置读取，不负责 skill 解析或执行。

@@ -6,16 +6,19 @@
 
 - [runner.py 改动说明](./runner.py.md)
   - 来源：`混合整理`
-  - 上传时间：`2026-05-09`
+  - 上传时间：`2026-05-09，2026-05-15 追加 skill-aware registry`
 - [langgraph_agent.py 改动说明](./langgraph_agent.py.md)
   - 来源：`混合整理 + unified SQLite 优化`
-  - 上传时间：`2026-05-11，2026-05-14 追加 answer_contract 校验优化`
+  - 上传时间：`2026-05-11，2026-05-14 追加 answer_contract 校验优化，2026-05-15 追加 compact working memory / dynamic skills`
+- [prompt.py 改动说明](./prompt.py.md)
+  - 来源：`WJB compact prompt 整合`
+  - 上传时间：`2026-05-15`
 - [filesystem.py 改动说明](./filesystem.py.md)
   - 来源：`混合整理`
   - 上传时间：`2026-05-09`
 - [config.py 改动说明](./config.py.md)
   - 来源：`混合整理`
-  - 上传时间：`2026-05-09`
+  - 上传时间：`2026-05-09，2026-05-15 追加 prompt/skills 配置`
 - [context_pack.py 改动说明](./context_pack.py.md)
   - 来源：`混合整理`
   - 上传时间：`2026-05-11，2026-05-14 追加 answer_contract 优化`
@@ -24,10 +27,37 @@
   - 上传时间：`2026-05-14`
 - [registry.py 改动说明](./registry.py.md)
   - 来源：`unified SQLite 优化`
-  - 上传时间：`2026-05-11`
+  - 上传时间：`2026-05-11，2026-05-15 追加 skill tools`
 - [unified_db.py 新增说明](./unified_db.py.md)
   - 来源：`unified SQLite 优化`
   - 上传时间：`2026-05-11，2026-05-14 追加 join candidate 优化`
 - [AgentParam.yaml 改动说明](./AgentParam.yaml.md)
   - 来源：`混合整理`
-  - 上传时间：`2026-05-09`
+  - 上传时间：`2026-05-09，2026-05-15 追加 prompt/skills 配置`
+- [skills.py 改动说明](./skills.py.md)
+  - 来源：`WJB dynamic skills 整合`
+  - 上传时间：`2026-05-15`
+- [skill_middleware.py 新增说明](./skill_middleware.py.md)
+  - 来源：`WJB dynamic skills 整合`
+  - 上传时间：`2026-05-15`
+- [skill_runtime.py 新增说明](./skill_runtime.py.md)
+  - 来源：`WJB skill runtime 整合`
+  - 上传时间：`2026-05-15`
+- [convert_file_with_duckdb.py 新增说明](./convert_file_with_duckdb.py.md)
+  - 来源：`WJB duckdb_convert_file skill`
+  - 上传时间：`2026-05-15`
+- [run_duckdb_query.py 新增说明](./run_duckdb_query.py.md)
+  - 来源：`WJB duckdb_query skill`
+  - 上传时间：`2026-05-15`
+- [read_file_with_duckdb.py 新增说明](./read_file_with_duckdb.py.md)
+  - 来源：`WJB duckdb_read_file skill`
+  - 上传时间：`2026-05-15`
+- [doc_structuring.py 新增说明](./doc_structuring.py.md)
+  - 来源：`DocSage structured doc 能力整合`
+  - 上传时间：`2026-05-15`
+- [flatten_json.py 新增说明](./flatten_json.py.md)
+  - 来源：`WJB json_nested_extraction skill`
+  - 上传时间：`2026-05-15`
+- [table_summary.py 新增说明](./table_summary.py.md)
+  - 来源：`WJB tabular_aggregation skill`
+  - 上传时间：`2026-05-15`

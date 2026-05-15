@@ -101,3 +101,160 @@ answer
 - 工具本身不自动判断题意，只执行模型给出的 SQL。
 - SQL 安全限制在 `unified_db.py` 中实现，`registry.py` 只负责注册和参数转发。
 - 如果模型仍选择 `execute_python`，本文件不会强制改写执行路径；后续可在 validation/repair 层继续增强。
+
+## 2026-05-15 追加记录：追加动态 skill 工具
+
+### 为什么修改
+
+WJB Phase 2 引入了 `SKILL.md` 动态发现和 skill 脚本 runtime。为了让 LangGraph/ReAct 执行阶段真正使用这些能力，需要把 skill runtime 暴露为工具。
+
+同时必须保留当前项目已有的 `inspect_unified_schema` 和 `execute_unified_sql`，不能让 DuckDB skill 取代 unified DB 主路径。
+
+### 修改成了什么运行逻辑
+
+新增导入：
+
+```python
+from data_agent_baseline.tools.skill_runtime import (
+    execute_skill_script_file as run_skill_script_file,
+    get_skill_resource as run_get_skill_resource,
+    list_skill_summaries as run_list_skill_summaries,
+)
+```
+
+新增工具：
+
+- `list_skills`
+  - 返回当前配置目录下发现的 skill 摘要。
+- `get_skill_resource`
+  - 读取 skill 的 `SKILL.md`、references、templates 等资源。
+  - 若资源是 `scripts/*.py`，转交 skill runtime 执行。
+- `execute_skill_script_file`
+  - 执行 skill 目录下的 Python 脚本。
+  - 输入参数包含 `skill_name`、`script_file_name`、`args`。
+
+`create_default_tool_registry()` 改为可接收：
+
+```python
+skill_source_dirs
+skill_recursive_discovery
+skill_script_timeout_seconds
+```
+
+并通过闭包传给各 skill handler。
+
+### 对项目流程的影响
+
+执行阶段新增可选路径：
+
+```text
+list_skills
+  -> get_skill_resource
+  -> execute_skill_script_file
+  -> answer
+```
+
+但主路径仍保持：
+
+```text
+inspect_unified_schema
+  -> execute_unified_sql
+  -> answer
+```
+
+### 对任务执行改善了什么
+
+- 表格任务可以调用 `tabular_aggregation/table_summary.py` 快速确认列数、行数和 header。
+- 嵌套 JSON 任务可以调用 `json_nested_extraction/flatten_json.py` 暴露深层 key path。
+- DuckDB skill 可以作为 unified DB 不方便处理的文件级查询/转换兜底。
+- trace 中会记录 skill 调用，便于区分“模型没读懂题意”和“辅助脚本输出不足”。
+
+### 边界
+
+- registry 只做参数校验和转发，不替模型选择 skill。
+- skill 脚本实际安全边界和超时由 `skill_runtime.py` 负责。
+- 新工具是追加注册，不删除或弱化 unified DB 工具。
+
+## 2026-05-15 追加记录：注册 doc structuring 工具
+
+### 为什么修改
+
+本次整合的核心是把 `doc/*.md` 先结构化，再进入 SQL 推理。如果 registry 不暴露对应工具，LangGraph 即使在 prompt 中知道需要 doc schema，也只能继续走：
+
+```text
+read_doc -> execute_python(regex) -> 反复重试
+```
+
+这正是 `task_352/task_396/task_418/task_420` 跑满 `max_steps` 的主要失败模式。
+
+### 修改成了什么运行逻辑
+
+新增导入：
+
+```python
+from data_agent_baseline.tools.doc_structuring import (
+    build_doc_tables as run_build_doc_tables,
+    execute_doc_sql as run_execute_doc_sql,
+    inspect_doc_tables as run_inspect_doc_tables,
+    plan_doc_schema as run_plan_doc_schema,
+)
+```
+
+新增 handler：
+
+- `_inspect_doc_schema`
+- `_build_doc_tables`
+- `_execute_doc_sql`
+- `_inspect_structured_context`
+
+新增 ToolSpec：
+
+- `inspect_doc_schema`
+  - 根据 task question + 文档内容推断 query-specific doc schema。
+- `build_doc_tables`
+  - 执行 doc 抽取，写入 task-local SQLite。
+- `execute_doc_sql`
+  - 对抽取出的 doc tables 执行只读 SQL。
+- `inspect_structured_context`
+  - 一次性查看 unified DB schema + doc schema plan + doc tables。
+
+### 对项目流程的影响
+
+执行路径从：
+
+```text
+inspect_unified_schema / execute_unified_sql
+或
+read_doc / execute_python
+```
+
+扩展为：
+
+```text
+inspect_doc_schema
+  -> build_doc_tables
+  -> execute_doc_sql
+  -> answer
+```
+
+以及混合路径：
+
+```text
+inspect_structured_context
+  -> build_doc_tables
+  -> execute_unified_sql 或 execute_doc_sql
+  -> answer
+```
+
+### 对任务执行改善了什么
+
+- `task_420`：可以先构建 `doc_legalities`，再做 commander/legal 过滤。
+- `task_352`：可以先构建 `doc_budget`，再和 event 数据做 ratio。
+- `task_396`：可以先构建 `doc_superhero`，再 join `publisher.json`。
+- `task_418`：可以结构化 `Patient.md` 和 `Laboratory.md`，避免模型全文 regex 搜索 CRE 阈值到死循环。
+
+### 边界
+
+- registry 仍不负责决定“何时该用 doc 工具”，只负责把能力暴露给 agent。
+- doc 工具返回的是 candidate structured evidence，不自动等价于最终答案。
+- 原 unified DB 工具完全保留，没有被 doc 路径替代。
