@@ -377,3 +377,58 @@ unified_db_v2:task.context_dir
 
 - 空表不导入不代表文档无用，只表示 deterministic extractor 没抽出可 SQL 化记录。
 - 非空但低质量的 doc 表仍可能需要后续 confidence/coverage 校验。
+
+## 2026-05-15 14:04 CST 追加记录：随 doc 抽取规则修复提升 unified DB 缓存版本
+
+### 为什么修改
+
+本次复查确认 `_copy_doc_extracted_tables()` 当前已经能跳过空 doc 表，不是 task_408/task_415 新失败的直接 bug。
+
+但 doc race id 抽取规则修复后，如果 unified DB 继续使用旧缓存，仍可能读取此前生成的空/旧 `doc_races` 结果，导致新规则没有在后续 run 中生效。
+
+### 修改成了什么运行逻辑
+
+将 unified DB 缓存版本从：
+
+```text
+unified_db_v2
+```
+
+提升到：
+
+```text
+unified_db_v3
+```
+
+缓存 key 继续由版本号和 `task.context_dir` 共同决定。逻辑本身不改变 CSV/JSON/SQLite/doc 导入流程，只强制后续任务基于新的 doc extraction 结果重建 task-level unified DB。
+
+### 对项目流程的影响
+
+修改前：
+
+```text
+doc extractor 已修复 -> unified DB 仍可能命中旧缓存 -> agent 仍看不到新 doc_races
+```
+
+修改后：
+
+```text
+doc extractor 已修复 -> unified DB 新缓存目录 -> doc_races 非空结果进入 schema
+```
+
+### 对任务执行改善了什么
+
+本地验证：
+
+```text
+task_408 unified doc_races: 88 rows, race_id=18 可查
+task_415 unified doc_races: 100 rows, race_id=14 可查
+```
+
+这保证 Formula1 race 文档抽取修复能实际进入 agent 查询路径，而不是被旧 `/tmp/dabench_unified` 缓存遮蔽。
+
+### 边界
+
+- 本次未修改 unified DB 导入语义。
+- 缓存版本提升会让后续首次运行重新构建 unified DB，之后仍复用缓存。
+- `task_344` 的医学阈值问题不是 unified DB 缓存问题，本次不在 unified DB 中硬编码领域阈值。

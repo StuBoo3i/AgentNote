@@ -193,3 +193,84 @@ doc/races.md -> race schema -> doc_races 有 race_id/year/url/evidence -> 可 SQ
 - race schema 只覆盖明确出现 `Race ID` 的 race dossier。
 - 对没有 Race ID 的普通叙述文档仍回退到 generic facts。
 - 不直接根据 race name 猜 race_id，必须有 evidence。
+
+## 2026-05-15 14:04 CST 追加记录：放宽 Formula1 race id 抽取格式
+
+### 为什么修改
+
+复查 `artifacts/runs/20260515T040601Z/task_408`、`task_415` 的失败链路后，确认当前 unified DB 空表处理不是主要 bug；真正的代码缺口在 race 文档抽取规则过窄。
+
+旧逻辑只识别：
+
+```text
+Race ID: 14
+```
+
+但 `task_408/context/doc/races.md` 使用的是自然语言写法：
+
+```text
+race 18
+```
+
+导致当前代码虽然能把文档识别成 race schema，但 `_extract_races()` 抽不到任何记录，agent 后续只能看到空 doc 表或缺失 filter source。
+
+### 修改成了什么运行逻辑
+
+将 race id 正则从只支持 `Race ID: <num>` 放宽为支持同一语义下的常见写法：
+
+```text
+Race ID: 14
+Race ID 14
+race 18
+event 18
+event number 18
+```
+
+实现仍然只在 race 文档 schema 下调用 `_extract_races()`，不按 task id 特判，也不把普通文档中的数字泛化成 race id。
+
+同时将 doc structuring 缓存版本从：
+
+```text
+doc_structured_v2
+```
+
+提升到：
+
+```text
+doc_structured_v3
+```
+
+避免继续复用旧的空 `doc_structured.db`。
+
+### 对项目流程的影响
+
+修改前：
+
+```text
+task_408 doc/races.md -> race schema -> race id 抽取失败 -> doc_races 空表
+```
+
+修改后：
+
+```text
+task_408 doc/races.md -> race schema -> doc_races(race_id=18, race_name=Australian Grand Prix, year=2008, url=...)
+```
+
+`task_415` 的 `Race ID: 14` 旧格式仍保持兼容。
+
+### 对任务执行改善了什么
+
+本地验证：
+
+```text
+task_408: race_id=18 -> Australian Grand Prix, 2008
+task_415: race_id=14 -> Singapore Grand Prix, 2009
+```
+
+这能减少 Formula1 任务中因 doc filter source 缺失导致的反复查空表、跑满 step、无法提交答案。
+
+### 边界
+
+- 本次修改只补齐同一 race id 语义的格式变体。
+- 不新增医学阈值、不新增 task-id 专用逻辑。
+- 对没有 race 上下文的文档不会启用 race 抽取。
