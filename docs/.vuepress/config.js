@@ -94,6 +94,8 @@ module.exports = {
             'DOCKER适配报告',
             'DOCSAGE优化预案',
             'DOCSAGE落地方案',
+            'docSage论文技术分析',
+            '15日阶段性代码反思',
             'wjb-1的分支合并计划（已作废）',
             'file-change-notes/'
           ]
