@@ -118,3 +118,78 @@ doc/*.md
 - 当前规则优先覆盖本项目失败案例里高频的 markdown 叙述模式，不是通用 IE 系统。
 - `superhero.md` 这种跨 section 聚合文档目前只做到启发式合并，覆盖率仍需后续验证。
 - 医学 normal/abnormal 阈值不在本模块硬编码；这里只抽记录和定性文本，不做高置信诊断判断。
+
+## 2026-05-15 13:45 CST 追加记录：修复 doc schema 误分类与 Formula1 race 文档结构化
+
+### 为什么修改
+
+`task_415` 新增失败的核心原因是 `doc/races.md` 被误判成 laboratory schema，生成了空的：
+
+```text
+doc_races(patient_id, lab_field, lab_value, status_text)
+```
+
+但该文档实际是 Formula 1 race dossier，包含 `Grand Prix / Race ID / year / wiki url`。误判后 agent 反复查询空表，最终没有提交答案。
+
+### 修改成了什么运行逻辑
+
+新增 race 文档识别和抽取：
+
+```text
+doc_races(
+  race_id,
+  race_name,
+  year,
+  url,
+  _source_path,
+  _chunk_id,
+  _evidence,
+  _confidence
+)
+```
+
+新增 `_extract_races()`：
+
+- 从 `Race ID: <number>` 抽取 `race_id`。
+- 从 URL 或正文抽取 `Grand Prix` 名称。
+- 从 URL 或正文抽取年份。
+- 保留 evidence 和 confidence。
+
+同时收紧 laboratory 判断：
+
+- 不再用 `cre` / `fg` 这种裸子串作为医学文档判断。
+- 改为词边界或明确医学术语：`creatinine / WBC / white blood / fibrinogen / bilirubin / laboratory / lab` 等。
+
+同时给 doc structuring 缓存增加版本前缀：
+
+```text
+doc_structured_v2:task.context_dir
+```
+
+避免修复抽取逻辑后继续复用旧的错误 `doc_structured.db`。
+
+### 对项目流程的影响
+
+修改前：
+
+```text
+doc/races.md -> laboratory schema -> 空 doc_races -> agent 空转
+```
+
+修改后：
+
+```text
+doc/races.md -> race schema -> doc_races 有 race_id/year/url/evidence -> 可 SQL 过滤 race_id
+```
+
+### 对任务执行改善了什么
+
+- `task_415` 可以从 doc 中稳定抽取 `Singapore Grand Prix -> Race ID 14`。
+- 类似 Formula 1 文档任务不再被医学 schema 污染。
+- doc 表具备 evidence，后续可和 `results.db`、`constructors.json` 串联。
+
+### 边界
+
+- race schema 只覆盖明确出现 `Race ID` 的 race dossier。
+- 对没有 Race ID 的普通叙述文档仍回退到 generic facts。
+- 不直接根据 race name 猜 race_id，必须有 evidence。

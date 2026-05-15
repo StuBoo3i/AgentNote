@@ -308,3 +308,72 @@ CSV/JSON/DB + doc-extracted candidate tables -> unified.db
 - doc 表是候选抽取结果，带 evidence/confidence，不等同于人工标注真值。
 - doc 抽取失败不影响原 unified DB。
 - `_join_candidates` 仍是启发式，需要模型或后续 SQL 验证。
+
+## 2026-05-15 13:45 CST 追加记录：doc 空表降权与缓存版本隔离
+
+### 为什么修改
+
+`task_415` 失败中，错误 doc structuring 生成了空的 `doc_races` 表，但 unified DB 仍把该空表作为普通 `doc_extracted` table 暴露给 agent。
+
+此外，`/tmp/dabench_unified` 缓存不感知代码逻辑版本，修复 doc 抽取后仍可能复用旧的错误 unified DB。
+
+### 修改成了什么运行逻辑
+
+#### 空 doc 表不再导入为普通表
+
+`_copy_doc_extracted_tables()` 现在会检查 doc table row count：
+
+```text
+row_count <= 0 -> 不创建/不保留实体表
+```
+
+只在 `_source_files` 中记录：
+
+```text
+source_type = doc_extracted_empty
+```
+
+表示该文档抽取为空，不能作为高可信 SQL 表使用。
+
+#### unified DB 缓存加版本前缀
+
+`_task_cache_dir()` 的 digest 输入从：
+
+```text
+task.context_dir
+```
+
+改为：
+
+```text
+unified_db_v2:task.context_dir
+```
+
+这样修改导入逻辑后会自动使用新的缓存目录，避免继续读取旧 schema。
+
+### 对项目流程的影响
+
+修改前：
+
+```text
+错误/空 doc table -> unified schema 中像普通表一样出现 -> agent 反复查空表
+```
+
+修改后：
+
+```text
+空 doc table -> 仅记录 doc_extracted_empty -> 不进入可查询主表清单
+```
+
+同时缓存版本隔离保证本次逻辑改动在后续 run 中生效。
+
+### 对任务执行改善了什么
+
+- `task_415` 这类任务不会再被空 `doc_races` 表误导。
+- 其他 doc 抽取失败/低覆盖任务会自然回退到原文读取或其他结构化源。
+- 代码修改后无需手动清理 `/tmp/dabench_unified` 才能看到新 unified DB 行为。
+
+### 边界
+
+- 空表不导入不代表文档无用，只表示 deterministic extractor 没抽出可 SQL 化记录。
+- 非空但低质量的 doc 表仍可能需要后续 confidence/coverage 校验。

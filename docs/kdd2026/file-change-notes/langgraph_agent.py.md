@@ -428,3 +428,173 @@ profile_context
 - compact prompt 不自动改写答案，只改变上下文组织方式。
 - `full_history` 和 `legacy` 仍可配置回退。
 - skills 只是推荐和工具可用性增强，不强制模型调用；CSV/JSON/DB 主路径仍优先 unified SQL。
+
+## 2026-05-15 追加记录：最终答案 source-aware 校验与同名字段错误拦截
+
+### 为什么修改
+
+`task_80` 的新增失败说明当前 LangGraph validation 只检查 answer 的列名、列数、空值和基本 answer contract，没有检查最终 SQL 是否真的使用了 `answer_contract.expected_columns` 指定的 qualified source。
+
+失败链路是：
+
+```text
+plan 正确锁定 json_drivers.number
+  -> 执行阶段查 csv_qualifying.number
+  -> header 仍叫 number
+  -> validation 未检查 source
+  -> 错误答案通过
+```
+
+该类问题会在任何多表同名字段场景出现，因此需要在 answer 前和 validation 阶段增加 source-aware 校验。
+
+### 修改成了什么运行逻辑
+
+新增 SQL 轻量解析 helper：
+
+```text
+_sql_table_aliases()
+_sql_mentions_table()
+_sql_select_clause()
+_sql_mentions_qualified_source()
+_sql_selects_source_or_unqualified_field()
+_sql_join_condition_visible()
+```
+
+这些 helper 负责从最后一次 `execute_context_sql` / `execute_unified_sql` 中识别：
+
+- `FROM` / `JOIN` 使用了哪些表。
+- 表别名与真实表名的对应关系。
+- `SELECT` 中是否投影了某个 qualified field。
+- required join 的左右 join column 是否在 SQL 中可见。
+- `USING(id)` 这类 join 写法也允许通过。
+
+新增 `_context_pack_source_errors()`：
+
+```text
+answer_contract.expected_columns
+  -> 读取 qualified expected source
+answer_contract.projection_source_conflicts
+  -> 检查最后 SQL 是否投影了 conflicting source
+answer_contract.joins
+  -> 检查同时使用 output/filter 两端表时是否包含 required join
+```
+
+在 `_node_execute_action()` 中，模型提交 `answer` 前先执行该校验：
+
+- 如果发现 source violation，不终止任务。
+- 记录一个可恢复失败 observation：
+
+```text
+recoverable_answer_contract_source_violation
+```
+
+- 提示模型重新用 qualified source 和 required join 查询。
+
+在 `_validate_and_normalize_answer()` 中也执行同一校验：
+
+- 如果仍然漏过 answer 前拦截，则作为 validation error 阻止错误答案通过。
+
+同时增强 planning/ReAct prompt：
+
+```text
+同名字段不能跨表替代；
+qualified answer_contract source 是强约束；
+output source 和 filter source 不同表时，最终证据查询必须包含 required join。
+```
+
+### 对项目流程的影响
+
+修改前：
+
+```text
+execute_unified_sql
+  -> answer
+  -> validation 只看 answer 表形状和列名
+```
+
+修改后：
+
+```text
+execute_unified_sql
+  -> answer
+  -> source-aware pre-answer check
+      -> 若错源：返回 recoverable error，要求 repair
+      -> 若通过：进入 answer tool
+  -> validation 再次执行 source-aware check
+```
+
+这相当于给最终答案增加一层 provenance 校验：不仅要输出正确形状，还要证明值来自正确 source。
+
+### 对任务执行改善了什么
+
+- Task80 中 `SELECT DISTINCT number FROM csv_qualifying ...` 会被拦截，因为它投影了 `csv_qualifying.number`，但 contract 要 `json_drivers.number`。
+- 正确 SQL `JOIN csv_qualifying ... json_drivers ... SELECT json_drivers.number` 或别名形式 `SELECT T2.number` 可以通过。
+- 避免模型因为单表查询更短、更快而跳过必要 join。
+- 泛化到其他同名字段冲突任务，例如 `id/name/type/status/number` 在实体表和事件表、关系表、filter 表中重复出现的情况。
+
+### 边界
+
+- SQL 解析是轻量正则，不替代完整 SQL parser；目标是拦截高风险错源，而不是证明所有 SQL 完全正确。
+- 只有最后一次 SQL 作为主要 evidence；如果模型用 Python 做复杂计算，该 source 校验不会强行解析 Python AST。
+- 若 expected source 置信度低或 answer_contract 没有 qualified source，则不触发强拦截，避免误伤不确定任务。
+
+## 2026-05-15 13:45 CST 追加记录：契约驱动的过滤范围、聚合粒度和精度校验
+
+### 为什么修改
+
+新增失败显示现有 validation 仍偏向表结构检查，无法拦截语义层错误：过滤范围扩大、指标源替代、聚合粒度错误、数值无要求 rounding。
+
+### 修改成了什么运行逻辑
+
+`_context_pack_source_errors()` 从只检查同名字段 source，扩展为检查：
+
+```text
+projection_source_conflicts
+metric_source_contracts
+filter_scope_contracts
+precision_policy
+joins
+```
+
+新增行为：
+
+- 若 contract 要 `csv_frpm.district_name`，但 SQL 用 `OR csv_frpm.county_name` 扩大范围，则 answer 前拦截。
+- 若 contract 要 `db_users_users.upvotes`，但 SQL 用 `json_posts.score`，则 answer 前拦截。
+- 若 contract 指定 `grain=user`，但 SQL 直接 join post detail 表后 `AVG(u.Age)`，则 answer 前拦截。
+- 若题目未要求 rounding，但 Python/SQL 中出现 `round()`、`:.2f`、`:.1f` 等固定精度格式，则 answer 前拦截。
+
+同时 prompt 明确要求遵守 `filter_scope_contracts`、`metric_source_contracts`、`precision_policy`，并在 doc-extracted table 为空或低置信时回退到 `read_doc` 原文证据。
+
+### 对项目流程的影响
+
+修改前：
+
+```text
+answer -> 检查列数/行宽/source 冲突的一小部分
+```
+
+修改后：
+
+```text
+answer -> contract-aware pre-answer check
+  -> source 是否正确
+  -> filter scope 是否被扩大
+  -> metric source 是否被替代
+  -> 聚合 grain 是否被 detail join 污染
+  -> 数值是否被无要求 rounding
+```
+
+若发现问题，不直接结束任务，而是作为 recoverable tool error 写入 trace，让模型有机会 repair。
+
+### 对任务执行改善了什么
+
+- `task_199`：拦截 `OR county_name` 这种范围扩大。
+- `task_249`：拦截 `AVG(p.Score)` 和 post detail join 后的 `AVG(u.Age)`。
+- `task_303`：拦截 `print(f"{percentage:.2f}")`。
+- 与 Task80 的 source-aware 校验共用同一机制，整体从“列名正确”升级为“来源、范围、粒度、精度正确”。
+
+### 边界
+
+- SQL 仍是轻量正则解析，不处理所有复杂 SQL AST。
+- 聚合 grain 检查只对高风险 detail-table join 做保守拦截。
+- 如果题目显式要求 rounding，`precision_policy` 会放行。
