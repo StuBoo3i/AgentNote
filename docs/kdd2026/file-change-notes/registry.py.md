@@ -258,3 +258,61 @@ inspect_structured_context
 - registry 仍不负责决定“何时该用 doc 工具”，只负责把能力暴露给 agent。
 - doc 工具返回的是 candidate structured evidence，不自动等价于最终答案。
 - 原 unified DB 工具完全保留，没有被 doc 路径替代。
+
+## 2026-05-16 00:52 CST 追加记录：工具描述对齐 doc-extracted unifiedDB 事实，并支持 query-specific doc schema 输入
+
+### 为什么修改
+
+Context/Schema/DocSage 优化后，raw doc text 不会直接进入 unifiedDB，但成功抽取的 doc-extracted candidate tables 会被复制到 unifiedDB。旧 `execute_unified_sql` 工具描述容易让模型误以为 unifiedDB 永远不包含 doc 相关表。
+
+同时，`inspect_doc_schema` 需要能够接收 context pack / unified schema，以便生成 query-specific doc schema，而不是每次只按题目和文件名粗推断。
+
+### 修改成了什么运行逻辑
+
+`execute_unified_sql` 描述更新为：
+
+```text
+Raw doc text is not imported; successful doc-extracted candidate tables may appear
+with evidence/confidence/quality columns.
+```
+
+`inspect_doc_schema` action handler 支持可选输入：
+
+```text
+context_pack
+unified_schema
+```
+
+并传入：
+
+```python
+run_plan_doc_schema(task, context_pack=context_pack, unified_schema=unified_schema)
+```
+
+### 对项目流程的影响
+
+工具层现在和真实数据流一致：
+
+```text
+doc text
+  -> doc_structuring candidate tables
+  -> unifiedDB doc_extracted tables
+  -> execute_unified_sql 可查询
+```
+
+模型在 ReAct 阶段可以更准确地选择：
+
+- 用 `inspect_doc_schema` 规划 doc table。
+- 用 `build_doc_tables` 构建 doc candidate table。
+- 用 `execute_doc_sql` 或 `execute_unified_sql` 查询已抽取表。
+
+### 对任务执行改善了什么
+
+- 避免模型因为工具描述误判而不查 unifiedDB 中的 doc-extracted tables。
+- 对需要 doc filter source + DB output source 的任务，减少不必要的全文 read_doc。
+- 让 query-specific doc schema 能在显式工具调用时复用 context pack 信息。
+
+### 边界
+
+- 工具描述只改变模型可见说明，不改变 SQL 执行权限。
+- `inspect_doc_schema` 传入的 context_pack 若缺失或格式错误，会回退到默认 schema planning。

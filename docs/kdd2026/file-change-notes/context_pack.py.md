@@ -378,3 +378,71 @@ Context Pack 从“文件/字段/join 提示”进一步升级为“过滤范围
 - 当前只实现高频、低风险的实体范围和指标来源识别。
 - `filter_scope_contracts` 只在题目明确指向 district 这类实体范围时生效。
 - `metric_source_contracts` 先覆盖 user/upvotes/age 这类已由失败案例证明高风险的模式，后续可扩展。
+
+## 2026-05-16 00:52 CST 追加记录：强化 Answer Contract、派生指标、同名字段与 doc schema hints
+
+### 为什么修改
+
+Context/Schema/DocSage 优化计划要求 Task Context Pack 不只做文件摘要，而要给 planner 和 verifier 提供更明确的答案契约。此前失败任务暴露出几类问题：
+
+- 输出列和过滤/排序列混在一起。
+- 同名字段只看列名，不看 qualified source。
+- ratio、monthly、best/highest、ranked second 等题意没有稳定 contract。
+- doc schema planning 没有充分利用 answer contract 和 source map。
+
+### 修改成了什么运行逻辑
+
+`infer_answer_contract()` 增强了若干低风险、泛化型契约：
+
+- `driver number` 只在题面明确问 driver number 时才绑定 driver entity 的 number，避免把 race/qualifying number 误当输出。
+- `comment with highest score` 将 comment text 作为 output，score 作为 sort field。
+- `tally/list element` 默认输出 element，不自动添加 count 列。
+- `ranked second` 优先绑定 `rank = 2`，不默认使用 position/order 字段。
+- `best lap time` 生成排序 contract，并要求排除 NULL。
+- `track number` 进入 ambiguity / medium confidence，而不是强绑定 race round。
+- `translated sets + commander` 优先生成 `setcode = code` 业务 join。
+- `monthly/per month + average consumption` 生成 `AVG(source) / 12` 派生表达式。
+
+同时继续保留并强化：
+
+```text
+projection_source_conflicts
+forbidden_projection_sources
+filter_scope_contracts
+metric_source_contracts
+precision_policy
+joins
+```
+
+这些字段会被 LangGraph planning、ReAct prompt、answer validation、Context Contract 默认值共同使用。
+
+### 对项目流程的影响
+
+Context Pack 从“字段可能在哪”进一步变成“最终答案值应来自哪里、如何算、哪些字段不能投影”的契约层。
+
+在后续流程中：
+
+```text
+context_pack.answer_contract
+  -> risk_gate / default_context_contract
+  -> planning prompt
+  -> ReAct prompt
+  -> answer validation
+```
+
+所有后续节点使用同一份 contract，减少 planner 和 final answer 对题意的自由发挥。
+
+### 对任务执行改善了什么
+
+- 改善 Task80：同名 `number` 字段必须来自 driver output source。
+- 改善 Task259：最高分评论只输出评论文本，不输出 id/score 等诊断列。
+- 改善 Task379：题目只要 element 时，不额外输出 tally_count。
+- 改善 Task169：monthly average 使用 `AVG(consumption) / 12`。
+- 改善 Task352：ratio 类题给 Context Contract 提供公式基础。
+- 改善 Task420：filter-only doc source 通过 doc requirements 和 filters_must_apply 更容易进入计划。
+
+### 边界
+
+- 新规则仍是启发式，不等于完整自然语言语义解析。
+- 低置信或歧义字段不直接硬阻断，而是写入 warning / ambiguity，让高风险流程再裁决。
+- 不按 task id 特判，失败案例只作为语义模式来源。

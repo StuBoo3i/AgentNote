@@ -598,3 +598,98 @@ answer -> contract-aware pre-answer check
 - SQL 仍是轻量正则解析，不处理所有复杂 SQL AST。
 - 聚合 grain 检查只对高风险 detail-table join 做保守拦截。
 - 如果题目显式要求 rounding，`precision_policy` 会放行。
+
+## 2026-05-16 00:52 CST 追加记录：接入 Risk Gate、Context Contract Agent 与 Contract-aware Answer Validation
+
+### 为什么修改
+
+`DataAnalysis Context/Schema/DocSage 优化计划` 要求保留单执行 agent，但对高风险任务增加轻量 Context Contract Agent 和 deterministic verifier。原 LangGraph 主链路是：
+
+```text
+profile_context -> build_plan -> plan_action -> execute_action -> validate_answer
+```
+
+这会让高风险任务直接进入 planner，导致题意契约不明确、doc table 质量不明、同名字段冲突、ratio/monthly/ranking 等问题在执行后期才暴露。
+
+### 修改成了什么运行逻辑
+
+`StateGraph` 新增三个节点：
+
+```text
+risk_gate
+context_contract_agent
+contract_validation
+```
+
+当前主流程变为：
+
+```text
+profile_context
+  -> risk_gate
+  -> context_contract_agent（仅 high risk 且配置开启时触发）
+  -> contract_validation
+  -> build_plan
+  -> plan_action
+  -> execute_action
+  -> validate_answer
+```
+
+新增 state 字段：
+
+```text
+context_evidence_bundle
+risk_assessment
+context_contract
+context_contract_raw
+context_contract_error
+contract_validation
+```
+
+planning prompt 和 ReAct prompt 都新增：
+
+- `Risk Assessment`
+- `Context Contract`
+- `Contract Validation`
+
+answer 提交前新增 `_context_contract_answer_errors()`，检查：
+
+- 最终答案列数是否超过 contract expected value slots。
+- required joins 是否在最终 SQL 中可见。
+- ranking `ORDER BY ... LIMIT 1` 是否遗漏 `IS NOT NULL`。
+- ratio / percentage 是否可见除法。
+- contract_validation blocker 是否存在。
+
+### 对项目流程的影响
+
+LangGraph 不再把所有任务一视同仁地送入 planner，而是先做 deterministic 风险分流。低风险任务只使用默认 contract；高风险任务才额外调用 Context Contract Agent。
+
+这让执行链路从“prompt 约束为主”升级为：
+
+```text
+deterministic risk -> optional contract -> deterministic validation -> solver execution
+```
+
+同时，metadata 中会保留：
+
+```text
+risk_assessment
+context_contract
+context_contract_error
+contract_validation
+```
+
+便于后续 trace 分析。
+
+### 对任务执行改善了什么
+
+- 对多 doc、超长 doc、doc quality flags、同名字段冲突、ratio/monthly/ranking 题提前强化契约。
+- 避免 Task420 这类 filter-only doc source 在 plan 阶段被忽略。
+- 避免 Task352 这类 ratio 被计划成 count。
+- 避免 Task80 这类同名字段只看列名不看 value source。
+- 在最终 answer 前阻断明显违反 Context Contract 的输出，而不是只生成 warning。
+
+### 边界
+
+- Context Contract Agent 只在 high risk 时调用，低风险任务不增加 LLM 成本。
+- Contract validation 仍使用轻量 SQL 文本检查，不是完整 SQL AST parser。
+- 如果 solver 使用 Python 完成复杂计算，source provenance 仍只能做文本级辅助判断。

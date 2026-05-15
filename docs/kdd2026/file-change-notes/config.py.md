@@ -191,3 +191,48 @@ AppConfig(
 
 - `agent.max_steps` 仍继续来自 `agent.max_steps`，没有用 `langgraph.max_steps` 覆盖。
 - `SkillsConfig` 只负责配置读取，不负责 skill 解析或执行。
+
+## 2026-05-16 00:52 CST 追加记录：增加 Context Contract Agent 配置项
+
+### 为什么修改
+
+Context/Schema/DocSage 优化计划要求只在高风险任务上触发轻量 Context Contract Agent，不能让所有任务都增加额外 LLM 成本。因此需要把该能力做成可配置开关，并控制 contract bundle 的 prompt 预算。
+
+### 修改成了什么运行逻辑
+
+`LangGraphRuntimeConfig` 新增：
+
+```python
+enable_context_contract_agent: bool = True
+context_contract_char_budget: int = 6000
+```
+
+配置读取优先级继续保持：
+
+```text
+代码默认值
+  -> AgentParam.yaml 的 langgraph 段
+  -> configs/*.yaml 的 langgraph 段
+```
+
+`load_app_config()` 会读取并规范化这两个字段，最终写入 `AppConfig.langgraph`。
+
+### 对项目流程的影响
+
+运行时可以通过配置控制：
+
+- 是否启用 high-risk Context Contract Agent。
+- ContextEvidenceBundle / Context Contract 在 prompt 中最多占用多少字符。
+
+默认开启，但只有 risk gate 判断为 high risk 时才会实际调用 contract agent。
+
+### 对任务执行改善了什么
+
+- 保留低风险任务的原有成本和速度。
+- 高风险任务可以获得更明确的答案契约。
+- 如果后续发现 contract agent 对某批任务收益不足，可以通过配置关闭，不需要改代码。
+
+### 边界
+
+- `agent.max_steps` 仍由 `agent.max_steps` 控制，没有迁移到 langgraph 段。
+- 配置项只控制是否调用 Context Contract Agent，不影响 deterministic risk gate 和 default contract 的构建。

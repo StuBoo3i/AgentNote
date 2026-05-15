@@ -432,3 +432,75 @@ task_415 unified doc_races: 100 rows, race_id=14 可查
 - 本次未修改 unified DB 导入语义。
 - 缓存版本提升会让后续首次运行重新构建 unified DB，之后仍复用缓存。
 - `task_344` 的医学阈值问题不是 unified DB 缓存问题，本次不在 unified DB 中硬编码领域阈值。
+
+## 2026-05-16 00:52 CST 追加记录：Doc-extracted Table 质量信息进入 unifiedDB
+
+### 为什么修改
+
+Context/Schema/DocSage 优化计划要求 unifiedDB 不仅导入 doc-extracted tables，还要把这些表的抽取质量暴露给 planner、risk gate 和 validation。旧逻辑中，非空 doc table 进入 unifiedDB 后只显示为普通可查表，模型难以区分高质量 evidence table 与低质量 candidate table。
+
+### 修改成了什么运行逻辑
+
+缓存版本提升到：
+
+```text
+unified_db_v4
+```
+
+`_copy_doc_extracted_tables()` 新增 `_doc_table_quality` 元数据表：
+
+```text
+table_name
+source_path
+quality_json
+```
+
+当 doc table 被导入 unifiedDB 时，同步保存来自 `inspect_doc_tables()` 的：
+
+```text
+quality_summary
+coverage
+confidence_summary
+validation_flags
+join_match_rate
+```
+
+`inspect_unified_schema()` 读取 `_doc_table_quality`，对 `source_type == "doc_extracted"` 的表增加：
+
+```text
+extraction_note
+quality_summary
+```
+
+join candidate 规则也增加了低风险业务 key 优先级：
+
+- `setCode` 与 `code` 作为 set 业务 key 优先。
+- 无 sample overlap 的同名 `id = id` 降低为 low confidence，避免过度相信同名 id。
+
+### 对项目流程的影响
+
+unifiedDB schema 从“表结构列表”升级为“结构 + 来源 + doc 抽取质量”的 schema profile：
+
+```text
+build_doc_tables()
+  -> doc table quality
+  -> _copy_doc_extracted_tables()
+  -> _doc_table_quality
+  -> inspect_unified_schema().tables[].quality_summary
+  -> risk_gate / context_contract / planner
+```
+
+这使高风险流程可以知道某张 doc table 是否低覆盖、低置信、空表或 join key 质量不足。
+
+### 对任务执行改善了什么
+
+- 减少低质量 doc 表被当成普通高可信表使用。
+- 支持 Context Contract Agent 判断 doc table 是否应作为 final answer evidence。
+- 改善 Task420 这类 set/legalities 业务 key join 场景。
+- 改善同名 id 跨表误 join 风险。
+
+### 边界
+
+- JSON 导入仍使用 `json.loads(path.read_text(...))`，尚未实现 streaming。
+- 当前 doc `join_match_rate` 不是完整跨表外键命中率，后续仍需进一步增强。
+- 低质量 doc table 当前主要通过 quality_summary 暴露和 validation 提醒，不是统一禁止查询。

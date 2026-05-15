@@ -274,3 +274,94 @@ task_415: race_id=14 -> Singapore Grand Prix, 2009
 - 本次修改只补齐同一 race id 语义的格式变体。
 - 不新增医学阈值、不新增 task-id 专用逻辑。
 - 对没有 race 上下文的文档不会启用 race 抽取。
+
+## 2026-05-16 00:52 CST 追加记录：Query-specific Doc Schema、质量报告与字段级证据
+
+### 为什么修改
+
+Context/Schema/DocSage 优化计划要求 doc structuring 真正受 Task Context Pack 约束，并输出可被 unifiedDB 和 verifier 使用的质量信息。旧逻辑中 `plan_doc_schema()` 对 `context_pack` 使用不足，doc table 即使低质量也可能进入 unifiedDB 并误导 solver。
+
+### 修改成了什么运行逻辑
+
+`plan_doc_schema()` 现在读取 `context_pack` 中的：
+
+```text
+doc_extraction_requirements
+answer_contract.expected_columns
+answer_contract.filters
+answer_contract.joins
+source_map.filter_field_sources
+source_map.aggregation_field_sources
+source_map.join_keys
+```
+
+新增 query-specific 行为：
+
+- 如果 context pack 指定 required doc source，则只为相关 doc 生成 schema。
+- 不相关 doc 写入 `skipped_by_query_specific_schema` uncertainty，不再直接生成噪声表。
+- columns 会根据 answer/filter/join hints 标注 output、filter、join_key 等角色。
+- 如果 context pack 要求 doc extraction 但没有生成任何表，写入 `empty_required_doc_schema` uncertainty。
+
+抽取结果新增行级字段：
+
+```text
+_confidence_score
+_confidence_reasons
+_validation_flags
+_evidence_json
+```
+
+新增质量校验：
+
+```text
+validate_doc_extraction()
+_validate_doc_table()
+```
+
+质量报告包含：
+
+```text
+coverage
+confidence_summary
+validation_flags
+join_match_rate
+required_field_failures
+primary_key_conflicts
+foreign_key_failures
+value_range_warnings
+```
+
+缓存版本提升到：
+
+```text
+doc_structured_v4
+```
+
+### 对项目流程的影响
+
+doc structuring 不再只是“根据文件名和题目粗分类”，而是进入如下流程：
+
+```text
+Task Context Pack
+  -> doc_extraction_requirements / answer_contract / source_map
+  -> plan_doc_schema()
+  -> extract_doc_records()
+  -> row confidence + field evidence + table quality
+  -> doc_structured.db
+  -> unifiedDB quality_summary
+```
+
+后续 risk gate 和 contract validation 可以读取 doc quality，而不是只看到“有表/无表”。
+
+### 对任务执行改善了什么
+
+- 减少 Task415 这类错误 doc schema 生成后被反复查询的风险。
+- 对 Task396/420 这类 doc filter source + structured output source 的任务，提供更明确的 join/filter/output 角色。
+- 对医学、金额、年龄、height、year 等字段提供基础范围告警。
+- 对低覆盖字段、主键冲突、低平均置信度给出可追踪 warning。
+
+### 边界
+
+- `join_match_rate` 当前主要来自 doc 表 join key 字段覆盖率，不是完整跨 unifiedDB 外键命中率。
+- extractor 仍是 deterministic/rule-based，不能覆盖所有非结构化文档表达。
+- 字段级 evidence 以 JSON 字符串保存，便于 SQLite 存储和 prompt 压缩。
