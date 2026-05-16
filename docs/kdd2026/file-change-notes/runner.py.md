@@ -230,3 +230,33 @@ configs/*.yaml / AgentParam.yaml
 
 - 如果调用方显式传入自定义 agent 或自定义 tools，该透传逻辑不改变外部对象行为。
 - 该修改只影响 langgraph framework；react framework 不使用 Context Contract Agent。
+## 2026-05-16 19:35 CST 追加记录：runner 透传新增 LangGraph runtime 参数
+
+### 为什么修改
+
+新增的 recursion limit、checkpoint、doc quality gate 和 JSON 阈值都需要从 `AppConfig.langgraph` 传入 `LangGraphReActAgent`，否则配置只会停留在加载层，不会影响实际任务执行。
+
+### 修改成了什么运行逻辑
+
+`_run_single_task_core()` 创建 `LangGraphAgentConfig` 时新增透传：
+
+```text
+recursion_limit
+checkpoint_enabled
+checkpoint_backend
+checkpoint_path
+checkpoint_thread_prefix
+doc_min_required_coverage
+doc_min_high_confidence_ratio
+import_low_quality_doc_tables
+unified_json_max_bytes
+```
+
+### 对项目流程的影响
+
+run-task、run-benchmark、official eval 只要走 langgraph framework，都会使用同一组 runtime 配置。
+
+### 边界
+
+- react framework 不使用这些新增参数。
+- checkpoint 默认关闭，因此默认并发 benchmark 行为不变。

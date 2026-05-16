@@ -365,3 +365,40 @@ Task Context Pack
 - `join_match_rate` 当前主要来自 doc 表 join key 字段覆盖率，不是完整跨 unifiedDB 外键命中率。
 - extractor 仍是 deterministic/rule-based，不能覆盖所有非结构化文档表达。
 - 字段级 evidence 以 JSON 字符串保存，便于 SQLite 存储和 prompt 压缩。
+## 2026-05-16 19:35 CST 追加记录：doc table confidence/evidence 质量信息暴露
+
+### 为什么修改
+
+unifiedDB 需要在导入 doc-extracted tables 前判断表质量。旧 `inspect_doc_tables()` 返回 coverage 和 sample rows，但没有集中暴露 `_confidence` 分布和 `_evidence` 是否存在，导致 unifiedDB 无法稳定区分高质量候选表与低质量候选表。
+
+### 修改成了什么运行逻辑
+
+`inspect_doc_tables()` 在读取每张 doc table 时新增质量信息：
+
+```text
+quality.row_count
+quality.confidence_distribution
+quality.has_evidence
+```
+
+其中：
+
+- `confidence_distribution` 来自 `_confidence` 分组计数。
+- `has_evidence` 检查 `_evidence` 是否存在非空值。
+- 原有 `coverage`、`columns`、`sample_rows` 保持不变。
+
+### 对项目流程的影响
+
+doc structuring 输出现在能支撑 unifiedDB 的质量门控：
+
+```text
+build_doc_tables()
+  -> inspect_doc_tables().tables[].quality
+  -> unifiedDB _doc_table_quality()
+  -> low_quality / ok 判定
+```
+
+### 边界
+
+- 质量信息是表级摘要，不判断每一行是否足以支撑最终答案。
+- `_confidence` 仍来自当前规则抽取器，不是 LLM 校验置信度。

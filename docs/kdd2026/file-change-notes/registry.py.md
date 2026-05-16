@@ -316,3 +316,66 @@ doc text
 
 - 工具描述只改变模型可见说明，不改变 SQL 执行权限。
 - `inspect_doc_schema` 传入的 context_pack 若缺失或格式错误，会回退到默认 schema planning。
+## 2026-05-16 19:35 CST 追加记录：SQL/Python 工具 provenance 与 unifiedDB 描述修正
+
+### 为什么修改
+
+旧工具 observation 只有查询结果本身，answer validation 只能反查最近 SQL 文本，无法稳定判断 doc SQL、unified SQL 或 Python 结果的证据来源。同时，`execute_unified_sql` 描述仍声称 doc 不进入 unifiedDB，但实际代码会导入成功结构化的 doc-extracted candidate tables，容易误导模型。
+
+### 修改成了什么运行逻辑
+
+新增轻量 provenance 构造：
+
+```text
+_sql_provenance()
+_python_provenance()
+```
+
+以下工具返回的 `content` 增加 `provenance`：
+
+```text
+execute_context_sql
+execute_unified_sql
+execute_doc_sql
+execute_python
+```
+
+SQL provenance 包含：
+
+```text
+tool
+sql
+referenced_tables
+referenced_sources
+result_columns
+has_doc_evidence_columns
+confidence
+```
+
+Python provenance 包含：
+
+```text
+tool
+code_excerpt
+referenced_sources
+has_doc_evidence_columns
+success
+confidence=low
+```
+
+`execute_unified_sql` 工具描述改为：
+
+```text
+Raw doc/md text is not directly imported;
+successful doc-extracted candidate tables may appear with
+_evidence, _confidence, and _source_path columns.
+```
+
+### 对项目流程的影响
+
+模型仍看到原工具名和原返回结果结构，但 validation 可以从 observation 读取更稳定的证据轨迹，而不是只能扫描最后一条 SQL。
+
+### 边界
+
+- referenced table 提取仍是轻量正则，不是完整 SQL parser。
+- Python provenance 只做文件路径和 evidence/confidence 字符串级识别。

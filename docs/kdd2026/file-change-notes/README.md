@@ -2,6 +2,67 @@
 
 本栏目逐文件记录核心改动，用于代码复盘与回归检查。
 
+## 2026-05-16 19:35 CST 追加记录：六项优先优化落地总览
+
+本次在 `/nfsdat/home/jwangslm/UniformDB` 中完成以下优化：
+
+```text
+1. LangGraph recursion_limit 默认计算与 invoke config 注入
+2. 可选 LangGraph checkpoint 配置与 memory backend 支持
+3. unifiedDB 工具描述与真实 doc-extracted table 行为对齐
+4. doc-extracted table 质量门控，低质量表默认不进入 unifiedDB 实体查询空间
+5. SQL/Python 工具 observation 增加 provenance，answer validation 使用证据轨迹
+6. JSON 导入大文件保护，JSONL/NDJSON 流式导入，超阈值普通 JSON 记录 skip metadata
+```
+
+额外修复：
+
+- `runtime.py` 将 `datetime.UTC` 改为 `timezone.utc`，保证 Python 3.10 兼容。
+- `.gitignore` 不再忽略 `tests/`，以便新增 smoke tests 进入项目记录。
+- 新增 `tests/test_priority_optimizations.py`，覆盖 recursion/checkpoint metadata、工具描述、doc quality、JSONL/大 JSON、doc SQL provenance validation。
+
+验证结果：
+
+```text
+pytest -q                                  -> 7 passed
+ruff check src tests                       -> All checks passed
+python -m compileall src/data_agent_baseline tests -> passed
+```
+
+对应详细记录已追加到：
+
+- `AgentParam.yaml.md`
+- `config.py.md`
+- `runner.py.md`
+- `langgraph_agent.py.md`
+- `registry.py.md`
+- `doc_structuring.py.md`
+- `unified_db.py.md`
+- `context_pack.py.md`
+
+## 2026-05-16 19:52 CST 追加记录：Context Pack 案例驱动规则降级
+
+根据代码检查，`infer_answer_contract()` 中确实存在若干案例驱动倾向较强的规则。已将 driver number、event type、lowest cost、average reading score、Formula1 race number、per unit、not 70 yet、post/user last editor 等规则从强制 answer contract 降级为 advisory `case_driven_hints` + `warnings`。
+
+核心变化：
+
+- 不再把这些规则直接写入 `expected_columns`、`filters`、`sort`、`joins`。
+- 不再把 `age < 70` 和 `per_unit_derived_metric` 写入 `filters_must_apply`。
+- 新增测试确保案例驱动规则只产生提示，不强制改写答案契约。
+
+验证结果：
+
+```text
+pytest -q tests/test_priority_optimizations.py -> 8 passed
+ruff check src tests                          -> All checks passed
+pytest -q                                     -> 8 passed
+python -m compileall src/data_agent_baseline tests -> passed
+```
+
+对应详细记录已追加到：
+
+- `context_pack.py.md`
+
 ## 文档入口
 
 - [runner.py 改动说明](./runner.py.md)

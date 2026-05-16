@@ -132,3 +132,45 @@ AgentParam.yaml / configs/*.yaml
 
 - `skills.enabled=true` 只是暴露和推荐 skills，不会强制模型必须调用 skill。
 - CSV/JSON/DB 的跨源 join/filter/aggregation 仍优先使用 unified DB；skills 是补充能力。
+## 2026-05-16 19:35 CST 追加记录：LangGraph 稳定性、checkpoint、doc quality 和 JSON 阈值配置
+
+### 为什么修改
+
+本次优化需要把运行时稳定性和数据质量门控从代码默认值提升为可配置参数，避免 LangGraph 默认递归限制提前中断任务，并为后续 checkpoint、doc-extracted table 质量控制和大 JSON 保护提供统一入口。
+
+### 修改成了什么配置
+
+`langgraph` 配置新增：
+
+```text
+recursion_limit
+checkpoint_enabled
+checkpoint_backend
+checkpoint_path
+checkpoint_thread_prefix
+doc_min_required_coverage
+doc_min_high_confidence_ratio
+import_low_quality_doc_tables
+```
+
+`tools` 配置新增：
+
+```text
+unified_json_max_bytes
+```
+
+默认行为保持保守：
+
+- checkpoint 默认关闭。
+- checkpoint backend 默认 `memory`。
+- 低质量 doc-extracted table 默认不进入 unifiedDB 实体查询空间。
+- 大 JSON 阈值默认 `50000000` bytes。
+
+### 对项目流程的影响
+
+AgentParam.yaml 现在能控制 LangGraph runtime、doc table 质量门控和 unified JSON 导入保护。配置加载后会进入 `LangGraphRuntimeConfig`，再由 runner 传给 `LangGraphAgentConfig`。
+
+### 边界
+
+- `recursion_limit` 留空时由代码按 `max_steps * 3 + 12` 自动计算。
+- sqlite/postgres checkpoint 仍是 optional backend，缺依赖时会明确报错。

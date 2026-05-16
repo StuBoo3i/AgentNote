@@ -236,3 +236,49 @@ context_contract_char_budget: int = 6000
 
 - `agent.max_steps` 仍由 `agent.max_steps` 控制，没有迁移到 langgraph 段。
 - 配置项只控制是否调用 Context Contract Agent，不影响 deterministic risk gate 和 default contract 的构建。
+## 2026-05-16 19:35 CST 追加记录：新增 LangGraph runtime / checkpoint / doc quality / JSON 导入配置
+
+### 为什么修改
+
+六项优先优化需要新增可配置项，而不是把 recursion limit、checkpoint、doc quality 和 JSON 文件大小阈值硬编码在执行逻辑中。
+
+### 修改成了什么运行逻辑
+
+`LangGraphRuntimeConfig` 新增字段：
+
+```text
+recursion_limit
+checkpoint_enabled
+checkpoint_backend
+checkpoint_path
+checkpoint_thread_prefix
+doc_min_required_coverage
+doc_min_high_confidence_ratio
+import_low_quality_doc_tables
+unified_json_max_bytes
+```
+
+配置来源支持两层覆盖：
+
+```text
+AgentParam.yaml defaults
+  -> 用户 config.yaml langgraph/tools 覆盖
+```
+
+其中 `tools.unified_json_max_bytes` 会覆盖默认 JSON 阈值，兼容计划中把 JSON 导入保护归入 tools 配置的要求。
+
+### 对项目流程的影响
+
+`load_app_config()` 现在会把新增 runtime 参数解析到 `AppConfig.langgraph`，由 runner 传入 `LangGraphReActAgent`。checkpoint backend 仅允许：
+
+```text
+memory | sqlite | postgres
+```
+
+非法值会在配置加载阶段直接报错。
+
+### 边界
+
+- `recursion_limit` 为空时保留为 `None`，由 agent runtime 计算默认值。
+- `checkpoint_path` 支持相对项目根目录路径。
+- checkpoint 默认关闭，现有 benchmark 默认行为不变。

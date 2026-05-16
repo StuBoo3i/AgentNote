@@ -504,3 +504,80 @@ build_doc_tables()
 - JSON 导入仍使用 `json.loads(path.read_text(...))`，尚未实现 streaming。
 - 当前 doc `join_match_rate` 不是完整跨表外键命中率，后续仍需进一步增强。
 - 低质量 doc table 当前主要通过 quality_summary 暴露和 validation 提醒，不是统一禁止查询。
+## 2026-05-16 19:35 CST 追加记录：doc quality 门控、provenance schema 和 JSON 大文件保护
+
+### 为什么修改
+
+六项优先优化要求 unifiedDB 不再无条件导入所有非空 doc-extracted tables，并且要避免大 JSON 通过 `json.loads(path.read_text())` 直接整文件读入导致内存或耗时风险。
+
+### 修改成了什么运行逻辑
+
+缓存版本提升到：
+
+```text
+unified_db_v4
+```
+
+`build_unified_db()` 新增参数：
+
+```text
+doc_min_required_coverage
+doc_min_high_confidence_ratio
+import_low_quality_doc_tables
+unified_json_max_bytes
+```
+
+`_source_files` 元数据扩展：
+
+```text
+quality_status
+quality_json
+```
+
+doc table 导入前新增 `_doc_table_quality()`：
+
+```text
+row_count
+coverage
+min_required_coverage
+high_confidence_ratio
+confidence_distribution
+has_evidence
+issues
+status
+```
+
+导入规则变为：
+
+- 空表记录为 `doc_extracted_empty`，不导入实体表。
+- 低质量表默认记录为 `doc_extracted_low_quality`，不导入实体表。
+- 高质量表导入为 `doc_extracted`，并在 `inspect_unified_schema()` 中暴露 `quality_status` 和 `quality`。
+
+JSON 导入保护：
+
+- `.jsonl` / `.ndjson` 使用 `_import_jsonl()` 流式批量导入。
+- 小 `.json` 保持原有 `json.loads(read_text)` 逻辑。
+- 超过 `unified_json_max_bytes` 的普通 JSON 不强行导入，记录 `json_import_skipped_large_file`，提示使用 Python/Polars 做 targeted reads。
+
+### 对项目流程的影响
+
+unifiedDB 现在同时承担：
+
+```text
+结构化源统一查询
+  + doc candidate table 质量门控
+  + JSON 大文件保护
+  + schema quality metadata 暴露
+```
+
+planner 和 validation 可以区分：
+
+- 可直接 SQL 使用的高质量 doc table。
+- 需要 fallback read_doc 的低质量 doc source。
+- 被跳过的大 JSON 文件。
+
+### 边界
+
+- 普通巨大 JSON array 第一版不做 streaming array 解析，避免引入 `ijson` 强依赖。
+- low quality 判定是表级门控，不能替代最终答案逐行证据核查。
+- `import_low_quality_doc_tables=true` 时仍允许低质量 doc table 进入 unifiedDB，但会携带 quality metadata。

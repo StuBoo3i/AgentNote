@@ -693,3 +693,84 @@ contract_validation
 - Context Contract Agent 只在 high risk 时调用，低风险任务不增加 LLM 成本。
 - Contract validation 仍使用轻量 SQL 文本检查，不是完整 SQL AST parser。
 - 如果 solver 使用 Python 完成复杂计算，source provenance 仍只能做文本级辅助判断。
+## 2026-05-16 19:35 CST 追加记录：recursion_limit、可选 checkpoint、provenance validation 和 doc quality 约束
+
+### 为什么修改
+
+当前 LangGraph 图每个业务 step 至少经过 `plan_action -> execute_action` 两个节点，加上 profile、plan、validate 等固定节点，默认 graph recursion limit 可能早于业务 `max_steps` 中断任务。同时，answer validation 过度依赖最后一条 SQL，无法覆盖 `execute_doc_sql` 和 Python 证据路径。
+
+### 修改成了什么运行逻辑
+
+`LangGraphAgentConfig` 新增：
+
+```text
+recursion_limit
+checkpoint_enabled
+checkpoint_backend
+checkpoint_path
+checkpoint_thread_prefix
+doc_min_required_coverage
+doc_min_high_confidence_ratio
+import_low_quality_doc_tables
+unified_json_max_bytes
+```
+
+`run()` 调用 graph 时新增：
+
+```text
+invoke_config["recursion_limit"]
+invoke_config["configurable"]["thread_id"]  # checkpoint 开启时
+```
+
+默认 recursion limit 计算规则：
+
+```text
+max_steps * 3 + 12
+```
+
+checkpoint 逻辑：
+
+- 默认关闭。
+- `memory` backend 直接使用 `langgraph.checkpoint.memory.MemorySaver`。
+- `sqlite/postgres` backend 使用 optional import；缺依赖时明确报错。
+
+metadata 新增：
+
+```text
+metadata.langgraph_runtime.recursion_limit
+metadata.langgraph_runtime.checkpoint
+```
+
+answer validation 方面：
+
+- `_last_sql_action()` 改为基于 `_latest_evidence_action()`。
+- evidence action 覆盖 `execute_context_sql`、`execute_unified_sql`、`execute_doc_sql`、`execute_python`。
+- `_context_pack_source_errors()` 优先读取 tool observation 中的 `provenance`。
+- doc-required answer 如果使用 doc-extracted 表但没有 `_evidence/_confidence/_source_path` 证据列，会被阻断。
+- final evidence 使用低质量 doc-extracted table 时会被阻断，要求 fallback 到 read_doc 或重新验证 doc table。
+
+prompt 也同步修正：
+
+- raw doc/md 不直接进入 unifiedDB。
+- 成功抽取的 doc candidate tables 可能进入 unifiedDB。
+- doc-extracted table 必须检查 evidence/confidence。
+- 低质量 doc table 应 fallback 到 read_doc evidence。
+
+### 对项目流程的影响
+
+LangGraph runtime 从“只靠 max_steps 控制循环”升级为：
+
+```text
+业务 max_steps
+  + LangGraph recursion_limit
+  + optional checkpoint thread_id
+  + evidence provenance validation
+```
+
+这减少了图层提前中断、doc SQL 绕过 source contract、Python 计算绕过证据追踪的风险。
+
+### 边界
+
+- Python provenance 第一版仍是保守文本级提取，不做完整 AST / SQL 语义分析。
+- checkpoint 默认关闭；sqlite/postgres 后端依赖未安装时不会自动降级。
+- 现有手写 ReAct 主流程未替换为 LangGraph prebuilt agent。

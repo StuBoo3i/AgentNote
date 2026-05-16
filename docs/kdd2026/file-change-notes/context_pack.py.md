@@ -446,3 +446,235 @@ context_pack.answer_contract
 - 新规则仍是启发式，不等于完整自然语言语义解析。
 - 低置信或歧义字段不直接硬阻断，而是写入 warning / ambiguity，让高风险流程再裁决。
 - 不按 task id 特判，失败案例只作为语义模式来源。
+## 2026-05-16 19:35 CST 追加记录：清理 Python 3.10 lint 阻断项
+
+### 为什么修改
+
+新增 tests 后执行 `ruff check src tests` 时，`context_pack.py` 中存在未使用的 `Counter` import。该 import 与本次业务优化无关，但会阻断 lint 验证。
+
+### 修改成了什么运行逻辑
+
+移除未使用的：
+
+```text
+from collections import Counter
+```
+
+### 对项目流程的影响
+
+无业务行为变化，仅保证 lint 通过。
+
+### 边界
+
+本次未修改 Context Pack 的 source mapping、answer contract 或 doc extraction requirement 逻辑。
+
+## 2026-05-16 19:52 CST 追加记录：案例驱动规则降级为 advisory hint
+
+### 为什么修改
+
+`infer_answer_contract()` 中存在若干由历史失败案例沉淀出的强规则，例如 driver number、event type、lowest cost、average reading score、Formula1 race number、per unit、not 70 yet、post/user last editor。这些规则能改善已知任务，但直接写入 `expected_columns`、`filters`、`sort`、`joins` 或 `filters_must_apply` 时，会把案例经验升级为强契约，容易对其他任务形成过强先验。
+
+本次优化遵循：
+
+```text
+写入 warning / unresolved，而不是强制改写答案。
+```
+
+### 修改成了什么运行逻辑
+
+`infer_answer_contract()` 新增 `case_driven_hints`，用于保存案例驱动但尚未被证据确认的语义提示。以下规则从强约束降级为 advisory-only：
+
+- `post_user_display_name`
+- `driver_number`
+- `event_type`
+- `lowest_cost`
+- `average_reading_score`
+- `formula1_race_number`
+- `per_unit`
+- `age_under_70_phrase`
+- `post_last_editor`
+
+这些规则现在只会写入：
+
+```text
+case_driven_hints
+warnings
+policy = advisory_only_do_not_force_answer_contract
+```
+
+不再直接写入：
+
+```text
+expected_columns
+filters
+sort
+joins
+filters_must_apply
+```
+
+同时删除 `_filters_must_apply_from_question()` 中对 `age < 70` 和 `per_unit_derived_metric` 的强制 required filter，避免仅凭短语就锁死过滤条件。
+
+### 对项目流程的影响
+
+Context Pack 仍会把这些模式暴露给 planner 和 validation，但语义地位从“必须遵守的答案契约”变成“需要验证的候选线索”。模型可以看到风险提示，但必须结合 schema、source evidence、SQL/Python 结果再决定是否使用。
+
+这样可以减少以下误伤：
+
+- 把任意 `number` 字段强制解释成 driver number。
+- 把 `type` 在 event 语境下强制绑定为输出列。
+- 把 lowest cost 一律解释为行级 cost 排序。
+- 把 average reading score 一律解释为既有 AvgScrRead 字段。
+- 把 race number 直接写成 `raceId = N`。
+- 把 per unit 和 not 70 yet 直接写成过滤条件。
+- 把 post/user 关系强制连接到 LastEditorUserId。
+
+### 测试与验证
+
+新增/更新 `tests/test_priority_optimizations.py` 中的覆盖：
+
+```text
+test_case_driven_answer_contract_rules_are_advisory_only
+```
+
+验证这些案例驱动规则只进入 `case_driven_hints`，不会污染强契约字段。
+
+验证结果：
+
+```text
+pytest -q tests/test_priority_optimizations.py -> 8 passed
+ruff check src tests                          -> All checks passed
+pytest -q                                     -> 8 passed
+python -m compileall src/data_agent_baseline tests -> passed
+```
+
+### 边界
+
+本次没有删除所有语义启发式。保留 commander、legal、advertisement、marvel comics 等较直接的题面必需过滤提示；只处理用户指出的案例驱动倾向较强、容易误伤跨任务泛化的规则。
+
+## 2026-05-16 20:17 CST 追加：按 Task 分析修正 intent 误分类
+
+### 修改原因
+
+根据 `/nfsdat/home/jwangslm/UniformDB/docs/Task分析与统计.md` 的统计，当前代码仍存在两类和任务描述方式不匹配的问题：
+
+- `how many times ... compared to ...` / `how many times ... more than ...` 应识别为 ratio/倍数，而不是普通 count。
+- `total views` 多数表示读取已有浏览量字段，不应被通用 `total` 关键词误判为 SUM。
+
+### 具体修改
+
+在 `infer_question_intent()` 中调整语义识别优先级：
+
+- 新增 `_asks_ratio()`，统一识别 `how many times` 搭配 `more than`、`compared to`、`versus`、`vs` 的倍数/比值问法。
+- ratio 识别优先于 `number of`，避免 task_243 风格问题被后续 `number of` 分支覆盖成 count。
+- 新增 `_asks_existing_metric_lookup()`，把 `Identify/State/Provide/What is/List/Name + total views/view count/views` 识别为 `lookup_metric`。
+- 将 sum 触发从通用 `total` 收窄为 `sum`、`total cost`、`total value`，避免 `total views` 误触发聚合求和。
+
+同步修改 `_infer_ratio_contract()`：
+
+- 复用 `_asks_ratio()`。
+- ratio contract 现在支持 `compared to` 描述，不再只支持 `more than`。
+
+### 对项目流程的影响
+
+该修改让 Task Context Pack 更符合 public task 的真实语言分布：
+
+- `how many times` 会进入 division/ratio contract，提示模型做除法而不是 COUNT。
+- `total views` 会作为已有指标查找，不会在 execution plan 里生成错误的 SUM 意图。
+- 保持保守策略：自然语言 cue 仍只是 intent/contract 候选，最终计算仍需要 schema、SQL/Python 结果和 provenance 支撑。
+
+### 验证
+
+新增回归测试覆盖：
+
+- task_243 风格：`how many times ... compared to ...`
+- task_352 风格：`how many times ... more than ...`
+- task_257 风格：`total views`
+
+验证结果：
+
+```text
+pytest -q              -> 9 passed
+ruff check src tests   -> All checks passed
+```
+
+## 2026-05-16 20:23 CST 追加：收敛语义关键词规则为 semantic cue 规则表
+
+### 修改原因
+
+此前 `infer_question_intent()`、`infer_answer_contract()` 中仍有分散的关键词分支，`Task分析与统计.md` 中指出的歧义词如 `total`、`number of`、`most`、`per unit` 仍可能在不同任务里语义漂移。当前实现虽然已经把部分 case-driven 规则降级为 advisory hint，但规则入口仍然分散，后续继续维护时很容易重新引入硬编码误判。
+
+### 具体修改
+
+在 `src/data_agent_baseline/agents/context_pack.py` 中新增集中式 semantic cue 规则机制：
+
+- 新增 `_semantic_cue_rule_specs()`，把常见题面 cue 收敛成小型规则表。
+- 新增 `_semantic_cue_matches()`，统一产出：
+  - `rule`
+  - `operation_candidate`
+  - `confidence`
+  - `policy`
+  - `message`
+- 新增 `_semantic_cue_map()`，供 answer contract 侧按规则名快速取用。
+
+第一批收敛的 cue 包括：
+
+- `ratio_how_many_times`
+- `percentage_words`
+- `existing_metric_total_views`
+- `per_unit`
+- `count_how_many`
+- `count_number_of`
+- `average_words`
+- `sum_total_cost_value`
+- `max_words`
+- `min_words`
+- `group_by_words`
+- `list_words`
+- `driver_number`
+- `event_type`
+- `lowest_cost`
+- `average_reading_score`
+- `formula1_race_number`
+- `age_under_70_phrase`
+- `post_last_editor`
+- `post_user_display_name`
+
+同时调整 `infer_question_intent()`：
+
+- 不再维护一组分散的 triggers。
+- 改为读取 `semantic_cues` 中的 `operation_candidate`，按规则表顺序选择主 intent。
+- 在 `question_intent` 中暴露 `semantic_cues`，便于 trace 和后续 validation 使用。
+
+同步调整 `infer_answer_contract()`：
+
+- 同样先计算 `semantic_cues`，再通过 `cue_map` 驱动后续逻辑。
+- 语义 cue 默认只进入：
+  - `semantic_cues`
+  - `case_driven_hints`
+  - `warnings`
+- 只有 schema 已经能够明确绑定字段时，才升级为 `expected_columns` 这类强约束。
+- `driver_number`、`event_type`、`lowest_cost`、`average_reading_score`、`formula1_race_number`、`per_unit`、`age_under_70_phrase`、`post_last_editor` 等规则，现在统一通过 `add_cue_hint()` 进入 advisory 路径。
+
+### 精简效果
+
+这次重构主要减少了两类冗余：
+
+- `infer_question_intent()` 中一组重复的关键词触发器，改成统一规则表驱动。
+- `infer_answer_contract()` 中多处直接 `if "xxx" in lowered` 的 case-driven 分支，改成按 cue 名称复用。
+
+这样后续新增任务语义时，只需要补一条 cue 规则，而不是同时改 intent、contract、warning 三处。
+
+### 对项目流程的影响
+
+新的边界更清晰：
+
+- 自然语言 cue：默认是 `hint` 或 `unresolved`。
+- 强约束：只在 schema 字段、evidence 或 provenance 能支持时才升级。
+- `question_intent` 和 `answer_contract` 都会保留 `semantic_cues`，便于后续把 validation 进一步迁移到 cue-aware 路径。
+
+### 验证
+
+```text
+pytest -q              -> 10 passed
+ruff check src tests   -> All checks passed
+```
