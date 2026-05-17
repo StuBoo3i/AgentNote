@@ -174,3 +174,74 @@ AgentParam.yaml 现在能控制 LangGraph runtime、doc table 质量门控和 un
 
 - `recursion_limit` 留空时由代码按 `max_steps * 3 + 12` 自动计算。
 - sqlite/postgres checkpoint 仍是 optional backend，缺依赖时会明确报错。
+
+## 2026-05-17 13:03 CST 追加记录：新增 Final Evidence Table 配置开关
+
+### 为什么修改
+
+Final Evidence Table 需要默认保守启用，但也必须能通过全局参数关闭或调节强度，避免后续 benchmark 发现个别任务回归时只能改代码。
+
+### 修改成了什么配置
+
+`langgraph` 段新增：
+
+```text
+final_evidence_enabled: true
+final_evidence_auto_repair: true
+final_evidence_require_for_answer: false
+final_evidence_min_confidence: high
+final_evidence_block_unsafe_projection: true
+```
+
+### 对项目流程的影响
+
+配置链路变为：
+
+```text
+AgentParam.yaml / configs/*.yaml
+  -> load_app_config()
+  -> AppConfig.langgraph
+  -> runner._run_single_task_core()
+  -> LangGraphAgentConfig
+  -> Final Evidence candidate / align / validation
+```
+
+默认仍不强制每个任务必须有 final evidence，避免影响 Python/doc 拼接类和 ratio/percentage 类任务。
+
+### 边界
+
+- `final_evidence_require_for_answer` 默认关闭。
+- `final_evidence_min_confidence` 默认 `high`，只使用高置信 candidate 做强修复。
+- 所有开关只影响 langgraph framework，不影响 react framework。
+
+## 2026-05-17 13:49 CST 追加记录：将 Final Evidence 默认值切回保守模式
+
+### 为什么修改
+
+对比 `20260516T123248Z` 和 `20260517T050228Z` 的 trace 后，确认新引入的 Final Evidence 自动修复过于激进，会把 `source_map` 和 `forbidden_projection_fields` 误当成强投影信号，进而改变原本正确的答案列和行。
+
+### 修改成了什么配置
+
+`langgraph` 段中的两个默认值改为：
+
+```text
+final_evidence_auto_repair: false
+final_evidence_block_unsafe_projection: false
+```
+
+其余 Final Evidence 配置保持不变：
+
+```text
+final_evidence_enabled: true
+final_evidence_require_for_answer: false
+final_evidence_min_confidence: high
+```
+
+### 对项目流程的影响
+
+当前默认行为从“自动修复答案”切回“优先记录 candidate 和 validation 信息”。只有明确高置信、结构可靠的 Final Evidence 才会被后续逻辑利用，不再默认对答案做强覆盖。
+
+### 边界
+
+- 这次修改只收紧默认值，不删除 Final Evidence 功能。
+- 如果后续需要做定向回归实验，仍可通过 `configs/*.yaml` 显式重新打开这两个开关。

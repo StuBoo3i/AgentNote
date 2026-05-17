@@ -175,6 +175,53 @@ inspect_unified_schema
 - skill 脚本实际安全边界和超时由 `skill_runtime.py` 负责。
 - 新工具是追加注册，不删除或弱化 unified DB 工具。
 
+## 2026-05-17 13:49 CST 追加记录：为 top-1 升序 SQL 增加 NULL 排序防护
+
+### 为什么修改
+
+`task_75` 暴露出一个通用问题：模型把原本带 `IS NOT NULL` 过滤的 SQL 改写成 `ORDER BY q2 ASC LIMIT 1` 后，SQLite 会把 `NULL` 排在最前面，导致返回“缺失值对应的第一行”而不是“最小非空值对应的第一行”。
+
+这不是题目专有问题，而是所有 `ASC + LIMIT 1` 排序题的通用风险。
+
+### 修改成了什么运行逻辑
+
+新增 `_with_null_safe_top1_order(sql)`：
+
+- 只匹配简单的 `ORDER BY <plain_column> [ASC] LIMIT 1`。
+- 不改写 `DESC`、`COALESCE(...)`、`CASE WHEN ...`、显式 `NULLS`/`IS NULL` 等复杂表达式。
+- 命中后自动改写为：
+
+```text
+ORDER BY <column> IS NULL ASC, <column> ASC LIMIT 1
+```
+
+该 rewrite 会接入：
+
+- `execute_context_sql`
+- `execute_doc_sql`
+- `execute_unified_sql`
+
+同时 provenance 会记录：
+
+```text
+original_sql
+sql_rewrites = ["order_by_limit_1_nulls_last"]
+```
+
+### 对项目流程的影响
+
+这是一层工具执行前的 deterministic SQL 保护，不依赖模型补写 `IS NOT NULL`，也不改动题意理解、plan 或 validation 逻辑。
+
+### 对任务执行改善了什么
+
+- `task_75` 这种“找最小非空排序值对应实体”的问题，不再因为 NULL 默认排序导致答案跳到错误行。
+- 其他类似的 cheapest/earliest/lowest/order-by-asc-top1 任务也会受益。
+
+### 边界
+
+- 只覆盖简单列排序，不尝试重写任意复杂 SQL。
+- 不改写 `DESC LIMIT 1`，因为 SQLite 中 `DESC` 已经天然把 NULL 放到后面。
+
 ## 2026-05-15 追加记录：注册 doc structuring 工具
 
 ### 为什么修改

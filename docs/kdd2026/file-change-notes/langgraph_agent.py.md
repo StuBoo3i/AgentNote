@@ -212,6 +212,29 @@ task_context_pack.answer_contract
 - 行数 warning 只在最近 tabular observation 与 answer columns 有明显对应关系时触发。
 - SQL NULL 检查只识别明显 `ORDER BY ... LIMIT 1` 场景，不解析任意复杂 SQL。
 
+## 2026-05-17 13:49 CST 追加记录：同步收紧 Final Evidence agent 默认策略
+
+### 为什么修改
+
+即使 `config.py` 和 `AgentParam.yaml` 已经改成保守模式，`LangGraphAgentConfig` 自身的 dataclass 默认值如果仍是激进模式，后续绕过集中配置构造 agent 时仍可能出现行为漂移。
+
+### 修改成了什么运行逻辑
+
+`LangGraphAgentConfig` 默认值同步改为：
+
+```python
+final_evidence_auto_repair: bool = False
+final_evidence_block_unsafe_projection: bool = False
+```
+
+### 对项目流程的影响
+
+无论 agent 是通过完整配置链路创建，还是在测试/脚本中直接实例化，默认行为现在都保持一致，减少隐藏分叉。
+
+### 边界
+
+- 该修改只影响默认值，不改变 `_node_validate_answer()` 中 Final Evidence 的接线方式。
+
 ## 2026-05-15 追加记录：WJB compact working memory 与动态 skill middleware
 
 ### 为什么修改
@@ -774,3 +797,77 @@ LangGraph runtime 从“只靠 max_steps 控制循环”升级为：
 - Python provenance 第一版仍是保守文本级提取，不做完整 AST / SQL 语义分析。
 - checkpoint 默认关闭；sqlite/postgres 后端依赖未安装时不会自动降级。
 - 现有手写 ReAct 主流程未替换为 LangGraph prebuilt agent。
+
+## 2026-05-17 13:03 CST 追加记录：接入 Final Evidence Table 到 LangGraph 执行链路
+
+### 为什么修改
+
+历史 trace 中存在一类问题：工具 observation 已经查到正确候选值，但最终 answer 多投辅助列、少投行，或从同名错误表投影。该问题不适合重写整个 LangGraph 主流程，因此在现有 answer 前后增加轻量 Final Evidence Table 对齐机制。
+
+### 修改成了什么运行逻辑
+
+`LangGraphAgentConfig` 新增：
+
+```text
+final_evidence_enabled
+final_evidence_auto_repair
+final_evidence_require_for_answer
+final_evidence_min_confidence
+final_evidence_block_unsafe_projection
+```
+
+`AgentGraphState` 新增：
+
+```text
+final_evidence_summary
+```
+
+非 answer 工具执行成功后，如果 observation content 中有 `columns` 和 `rows`，会调用：
+
+```text
+build_final_evidence_candidate()
+```
+
+并写入：
+
+```text
+content["final_evidence_candidate"]
+```
+
+answer 分支在 `guard_answer_action_input()` 前调用：
+
+```text
+align_answer_with_final_evidence()
+```
+
+如果能安全自动修复，会用修复后的 `columns/rows` 继续执行原有 guard 和 validation。如果存在 blocker，则记录 recoverable `StepRecord`，要求模型重新查询或按 final evidence projection 提交。
+
+validation 阶段新增：
+
+```text
+validate_answer_with_final_evidence()
+```
+
+并把结果写入：
+
+```text
+answer_validation.final_evidence
+metadata.final_evidence_summary
+```
+
+### 对项目流程的影响
+
+主图结构没有改变，仍是：
+
+```text
+profile_context -> build_plan -> plan_action -> execute_action -> validate_answer
+```
+
+Final Evidence Table 只作为本地 deterministic 对齐层，不新增模型必须调用的工具，不增加 LLM step。
+
+### 边界
+
+- 默认不强制每个任务必须有 final evidence。
+- 只从 tabular SQL 类工具结果生成 candidate，不解析 Python stdout。
+- 无高置信 candidate 时保留原 answer 流程。
+- 多输出 slot 任务不会因为多列就被强制压成单列。

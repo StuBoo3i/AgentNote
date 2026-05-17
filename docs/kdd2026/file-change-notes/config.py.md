@@ -219,6 +219,32 @@ context_contract_char_budget: int = 6000
 
 ### 对项目流程的影响
 
+## 2026-05-17 13:49 CST 追加记录：收紧 Final Evidence 运行时默认值
+
+### 为什么修改
+
+这次回归分析表明，问题不在于缺少 Final Evidence candidate，而在于默认自动修复和强阻断会把中等置信的 clue 提升成强执行信号，导致答案被错误改写。
+
+### 修改成了什么运行逻辑
+
+`LangGraphRuntimeConfig` 默认值改为：
+
+```python
+final_evidence_auto_repair: bool = False
+final_evidence_block_unsafe_projection: bool = False
+```
+
+这意味着即使 `AgentParam.yaml` 或任务配置没有显式覆盖，运行时也会默认走保守策略。
+
+### 对项目流程的影响
+
+配置默认值和集中参数文件保持一致，避免出现“代码默认是激进模式，但参数文件忘记同步”的状态漂移。
+
+### 边界
+
+- `final_evidence_enabled` 仍保持开启。
+- `final_evidence_require_for_answer` 仍默认关闭，因此没有 candidate 时不会新增阻断。
+
 运行时可以通过配置控制：
 
 - 是否启用 high-risk Context Contract Agent。
@@ -282,3 +308,45 @@ memory | sqlite | postgres
 - `recursion_limit` 为空时保留为 `None`，由 agent runtime 计算默认值。
 - `checkpoint_path` 支持相对项目根目录路径。
 - checkpoint 默认关闭，现有 benchmark 默认行为不变。
+
+## 2026-05-17 13:03 CST 追加记录：接入 Final Evidence Table runtime 配置
+
+### 为什么修改
+
+`LangGraphAgentConfig` 已经新增 Final Evidence Table 相关开关，如果 `config.py` 不解析这些字段，`AgentParam.yaml` / `configs/*.yaml` 的覆盖不会真正进入运行时。
+
+### 修改成了什么运行逻辑
+
+`LangGraphRuntimeConfig` 新增：
+
+```text
+final_evidence_enabled
+final_evidence_auto_repair
+final_evidence_require_for_answer
+final_evidence_min_confidence
+final_evidence_block_unsafe_projection
+```
+
+`load_app_config()` 会按原有优先级读取：
+
+```text
+代码默认值
+  -> AgentParam.yaml langgraph 段
+  -> 用户 config.yaml langgraph 段
+```
+
+布尔字段通过 `_to_bool()` 规范化，`final_evidence_min_confidence` 会转成小写字符串。
+
+### 对项目流程的影响
+
+Final Evidence Table 从“只能使用代码默认值”变为可配置 runtime 能力。后续如果需要做 ablation，可以直接配置：
+
+```yaml
+langgraph:
+  final_evidence_enabled: false
+```
+
+### 边界
+
+- 不改变现有 recursion/checkpoint/doc quality/JSON 配置逻辑。
+- 默认 `final_evidence_require_for_answer=false`，没有高置信 evidence 时仍沿用旧 answer guard/validation。
