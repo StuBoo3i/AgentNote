@@ -174,3 +174,69 @@ ruff check src/data_agent_baseline/agents/context_pack.py src/data_agent_baselin
 ### 为什么修改
 
 这轮改动明确删除了所有专业领域抽取规则，测试必须转向保护“通用 chunk evidence 表”而不是保护旧的领域字段行为。
+
+## 2026-05-18 19:47 CST 追加记录：增加 Context Pack 结构测试
+
+### 涉及文件
+
+`/nfsdat/home/jwangslm/UniformDB/tests/test_priority_optimizations.py`
+
+### 修改内容
+
+- 新增结构性测试，断言 `context_pack.py` 已经变成薄编排层。
+- 检查原文件中不再包含：
+  - `def infer_answer_contract(`
+  - `def profile_structured_sources(`
+  - `def link_question_to_schema(`
+  - `def infer_join_keys(`
+  - `def _semantic_cue_rule_specs(`
+- 断言 `context_pack.py` 行数小于 `300`。
+
+## 2026-05-18 20:32 CST 追加记录：测试改为调用 langgraph_support 实现
+
+### 涉及文件
+
+`/nfsdat/home/jwangslm/UniformDB/tests/test_priority_optimizations.py`
+
+### 修改内容
+
+- 原先直接调用 `LangGraphReActAgent` 私有 helper 的测试：
+  - `_build_plan_messages()`
+  - `_build_messages()`
+  - `_context_pack_source_errors()`
+- 现在改为直接调用 `langgraph_support.py` 中对应实现。
+
+### 为什么修改
+
+这轮明确删除了 `langgraph_agent.py` 中这些非核心 wrapper，测试也需要跟着对齐到新的实现位置。
+
+## 2026-05-18 21:03 CST 追加记录：测试改为新模块入口并保护 support 删除
+
+### 涉及文件
+
+`/nfsdat/home/jwangslm/UniformDB/tests/test_priority_optimizations.py`
+
+### 修改内容
+
+- prompt 相关测试改为从 `agents.prompt` 导入。
+- source contract 测试改为从 `agents.answer_validation` 导入。
+- 新增结构测试，断言：
+  - `langgraph_support.py` 不存在
+  - `langgraph_context.py` 和 `answer_validation.py` 存在
+  - `langgraph_agent.py` 不包含 prompt/profile/validation 的实现体
+  - `langgraph_agent.py` 行数小于 `650`
+
+## 2026-05-18 21:20 CST 追加记录：新增 unifiedDB / ReAct 解耦结构测试
+
+### 涉及文件
+
+`/nfsdat/home/jwangslm/UniformDB/tests/test_priority_optimizations.py`
+
+### 修改内容
+
+- 新增 `test_unified_db_core_file_keeps_only_public_orchestration()`，检查 `unified_db.py` 行数、公共入口和 importer/metadata/join/query 实现体迁出。
+- 新增 `test_react_core_file_is_compatibility_facade()`，检查 `react.py` 行数、旧导入路径兼容和 parser/action input/answer guard 实现体迁出。
+
+### 验证
+
+- `PYTHONPATH=src pytest -q` 通过，结果为 `47 passed`。

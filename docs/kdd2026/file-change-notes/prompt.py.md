@@ -90,3 +90,23 @@ Question: ...
 ### 作用
 
 任务描述不再以 pack 外的第二套形式重复进入模型，减少 prompt 冗余和语义分叉。
+## 2026-05-18 21:03 CST 追加记录：接收 LangGraph prompt/plan 构建逻辑
+
+### 涉及文件
+
+`/nfsdat/home/jwangslm/UniformDB/src/data_agent_baseline/agents/prompt.py`
+
+### 修改内容
+
+- 从 `langgraph_support.py` 迁入：
+  - `build_plan_messages()`
+  - `build_messages()`
+  - `default_high_level_plan()`
+  - `normalize_high_level_plan()`
+  - `parse_json_object_from_text()`
+  - ReAct history 压缩和 prompt budget helper
+- 复用 `react.py` 里的 `_extract_balanced_json_object()`，避免继续维护第二套 balanced JSON 提取逻辑。
+
+### 作用
+
+prompt/plan 构建现在回到 prompt 模块，`langgraph_agent.py` 不再承载 prompt 文案主体。

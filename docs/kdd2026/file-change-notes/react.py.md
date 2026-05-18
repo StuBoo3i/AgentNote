@@ -174,3 +174,24 @@ model raw json
 - 这是容错，不是自由格式解析；仍要求 action 和 JSON 主体正确。
 - 空 `execute_python` 本身没有被自动补代码，只是顶层 `code` 变体能被接受。
 - 复杂 malformed JSON 仍依赖原有 `json_repair` 和 fenced block 提取逻辑。
+
+## 2026-05-18 21:20 CST 追加记录：收缩为 ReAct 兼容门面
+
+### 涉及文件
+
+`/nfsdat/home/jwangslm/UniformDB/src/data_agent_baseline/agents/react.py`
+
+### 修改内容
+
+- 保留旧公共导入路径，re-export：
+  - `parse_model_step`
+  - `parse_error_step_payload`
+  - `guard_answer_action_input`
+  - `_has_multiple_answer_slots`
+  - `_extract_balanced_json_object`
+- 删除 parser、action input normalize、answer guard 的实现体，迁入独立职责模块。
+
+### 验证
+
+- `react.py` 行数为 16，低于 180 行目标。
+- `PYTHONPATH=src pytest -q` 通过，结果为 `47 passed`。

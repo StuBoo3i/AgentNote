@@ -818,3 +818,29 @@ one value vector per matching <table>
 ### 对系统行为的影响
 
 Task Context Pack 现在只消费 DocSage 的通用文档结果，不再自己读 markdown，也不再依赖领域字段存在与否。
+
+## 2026-05-18 19:47 CST 追加记录：Context Pack 模块解耦
+
+### 涉及文件
+
+`/nfsdat/home/jwangslm/UniformDB/src/data_agent_baseline/agents/context_pack.py`
+
+### 修改内容
+
+- `context_pack.py` 收缩为薄编排层。
+- 保留：
+  - `build_task_context_pack()`
+  - `_doc_extraction_requirements()`
+  - `_unresolved_schema_questions()`
+- 通过 import 兼容导出：
+  - `infer_question_intent`
+  - `infer_answer_contract`
+  - `profile_structured_sources`
+  - `link_question_to_schema`
+  - `infer_join_keys`
+
+### 结果
+
+- 原文件从 `2042` 行降到 `190` 行。
+- 不再在同一文件中混放 profiling、semantic rules、schema mapping、answer contract 和 helper。
+- `context_pack.py` 现在只保留 Context Pack 的核心运行范式和顶层组装逻辑。

@@ -601,3 +601,20 @@ planner 和 validation 可以区分：
 ### 对系统行为的影响
 
 unifiedDB 仍然会导入 doc-extracted 表，但导入控制权已经回到 DocSage，模块边界更清晰。
+
+## 2026-05-18 21:20 CST 追加记录：收缩为 unifiedDB 公共入口和编排层
+
+### 涉及文件
+
+`/nfsdat/home/jwangslm/UniformDB/src/data_agent_baseline/tools/unified_db.py`
+
+### 修改内容
+
+- 保留 `UnifiedDbArtifacts`、`build_unified_db()`、`inspect_unified_db()`、`inspect_unified_schema()`、`execute_unified_sql()` 等公共入口。
+- 删除文件内 CSV/JSON/SQLite importer、metadata、join inference、read-only SQL executor 的实现体，改为调用职责模块。
+- `build_unified_db()` 仍保持原执行顺序：遍历 context 文件、导入结构化源、调用 DocSage 导入 doc-extracted 表、写 metadata、推断 join、生成 summaries。
+
+### 验证
+
+- `unified_db.py` 行数为 174，低于 350 行目标。
+- `PYTHONPATH=src pytest -q` 通过，结果为 `47 passed`。

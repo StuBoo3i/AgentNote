@@ -1017,3 +1017,53 @@ json.dumps(state["high_level_plan"], ensure_ascii=False, indent=2)
 ### 作用
 
 现在 execution prompt 里的高层计划和 `build_plan` 产物保持完整一致，不会先被局部截断；总量控制仍然交给整个 prompt 的 trimming 逻辑。
+
+## 2026-05-18 20:32 CST 追加记录：收缩 langgraph_agent.py 为核心图编排
+
+### 涉及文件
+
+`/nfsdat/home/jwangslm/UniformDB/src/data_agent_baseline/agents/langgraph_agent.py`
+
+### 修改内容
+
+- 删除 `langgraph_agent.py` 中的大量非核心实现：
+  - prompt 构建与 plan 解析
+  - context file inspection / unifiedDB profile
+  - answer validation / source contract / trace helper
+- 保留的内容只剩：
+  - `LangGraphAgentConfig`
+  - `AgentGraphState`
+  - graph compile / checkpoint
+  - 5 个图节点编排
+  - route
+  - `run()`
+- 不再保留 `_build_plan_messages()`、`_build_messages()`、`_context_pack_source_errors()` 这类兼容 wrapper。
+
+### 为什么修改
+
+目标是让 `langgraph_agent.py` 只承担 LangGraph 执行链路本身，而不是继续作为 prompt/profile/validation 的聚合文件。
+
+### 结果
+
+- `langgraph_agent.py` 行数降到 `587`
+- Agent 主文件只保留核心图编排
+- 测试全部通过
+
+## 2026-05-18 21:03 CST 追加记录：移除 langgraph_support 依赖
+
+### 涉及文件
+
+`/nfsdat/home/jwangslm/UniformDB/src/data_agent_baseline/agents/langgraph_agent.py`
+
+### 修改内容
+
+- 不再从 `langgraph_support.py` 导入任何实现。
+- profile_context 调用改为 `langgraph_context.build_profile_context_update()`。
+- prompt/plan 调用改为 `prompt.py` 中的构建函数。
+- answer validation/source contract 调用改为 `answer_validation.py`。
+- trace name、mermaid、runtime metadata 小函数留在 `langgraph_agent.py` 内部。
+
+### 结果
+
+- `langgraph_agent.py` 行数为 `638`，仍低于核心编排文件阈值。
+- `langgraph_support.py` 已删除。
