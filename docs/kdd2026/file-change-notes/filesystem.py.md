@@ -125,3 +125,17 @@ LangGraph/ReAct
 
 - CSV 的 `row_count` 仍通过 streaming 完整遍历得到，因此对超大 CSV 仍有 I/O 成本，但没有全量内存成本。
 - JSON 大文件只读前缀，不能保证 preview 包含完整 schema；深层分析由后续工具或任务执行代码完成。
+
+## 2026-05-18 16:32 CST 追加记录：移除文档 preview 实现
+
+### 涉及文件
+
+`/nfsdat/home/jwangslm/UniformDB/src/data_agent_baseline/tools/filesystem.py`
+
+### 修改内容
+
+删除 `read_doc_preview()`。
+
+### 为什么修改
+
+文档 preview 也是非结构化文档处理的一部分，不应该继续留在通用 filesystem 模块里。现在这部分能力统一由 `docsage/io.py` 提供。

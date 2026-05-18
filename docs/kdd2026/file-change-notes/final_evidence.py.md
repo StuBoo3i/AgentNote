@@ -132,3 +132,55 @@ Final Evidence 现在更像“高置信答案对齐器”，而不是“看到 c
 
 - 本次没有删除 `source_map` clue，只是把它降级为 hint。
 - `expected_columns` 仍然是强信号，但现在要求它更接近真实 answer slot，而不是泛化语义 cue。
+
+## 2026-05-17 23:10 CST 追加记录：高置信长表物化与 mismatch 阻断
+
+### 为什么修改
+
+之前 Final Evidence 的结构性空洞是：
+
+- 只有 `projectable` candidate 才参与强校验。
+- 没有 `projectable` 时，长表最终答案仍然依赖模型手工复制。
+- validation 不会检查 answer rows 是否忠实来自最近完整结构化 evidence。
+
+### 修改成了什么逻辑
+
+这次新增两层机制：
+
+1. 高置信长表直接物化  
+当 selected Final Evidence 同时满足：
+
+```text
+来自 execute_unified_sql / execute_context_sql / execute_doc_sql
+truncated != true
+row_count == len(rows)
+projection_source == expected_columns
+projected_rows 非空
+行数 >= long_table_min_rows
+```
+
+`align_answer_with_final_evidence()` 直接返回 evidence projection：
+
+```text
+columns = projection.columns
+rows = projected_rows
+summary.materialized = true
+summary.materialized_reason = trusted_projected_long_table
+```
+
+2. 无高置信 projection 时的保守阻断  
+如果没有 selected `projectable`，但存在最近完整未截断结构化 evidence，且 answer 是长表：
+
+- 若 answer columns 能唯一映射到 evidence columns，就比较 projected evidence rows 和 answer rows 的 multiset。
+- 若行数不一致或 multiset 明显不一致，返回：
+
+```text
+final_answer_rows_do_not_match_latest_complete_evidence
+```
+
+- 若列无法唯一映射，只写 warning，不自动修正。
+
+### 额外收紧
+
+- `output_field_sources` 仍可形成 `candidate`，但不再形成 `projectable`。
+- `forbidden_projection_fields` 只用于 warning/error，不参与投影生成，也不作为自动删列依据。

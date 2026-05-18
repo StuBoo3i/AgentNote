@@ -70,3 +70,23 @@ MINIMAL_REACT_SYSTEM_PROMPT
 ### 边界
 
 - 本文件只提供 prompt 构造函数，不决定何时使用 minimal；实际选择由 `langgraph_agent.py` 和配置控制。
+
+## 2026-05-18 15:23 CST 追加记录：删除独立 task prompt
+
+### 为什么修改
+
+这次要求把任务与上下文信息统一收敛到 `Task Context Pack`，继续保留 `build_task_prompt()` 会让执行阶段再次收到 pack 外的原始 question。
+
+### 修改成了什么逻辑
+
+删除了 `build_task_prompt()`。执行阶段不再单独注入：
+
+```text
+Question: ...
+```
+
+而是通过 `Task Context Pack.task.question` 提供任务文本。
+
+### 作用
+
+任务描述不再以 pack 外的第二套形式重复进入模型，减少 prompt 冗余和语义分叉。

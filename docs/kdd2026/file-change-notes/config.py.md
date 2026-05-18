@@ -350,3 +350,81 @@ langgraph:
 
 - 不改变现有 recursion/checkpoint/doc quality/JSON 配置逻辑。
 - 默认 `final_evidence_require_for_answer=false`，没有高置信 evidence 时仍沿用旧 answer guard/validation。
+
+## 2026-05-17 23:10 CST 追加记录：Final Evidence 长表配置接入
+
+### 为什么修改
+
+本次新增的长表可信落地机制需要通过 `load_app_config()` 进入 runtime config，才能让 `AgentParam.yaml` 和用户覆盖配置真正生效。
+
+### 修改成了什么逻辑
+
+`LangGraphRuntimeConfig` 新增 3 个字段：
+
+```text
+final_evidence_materialize_long_tables: bool = True
+final_evidence_long_table_min_rows: int = 20
+final_evidence_block_mismatched_long_table: bool = True
+```
+
+并在 `load_app_config()` 中补齐：
+
+- `AgentParam.yaml` 默认值读取。
+- 用户 `config.yaml` 覆盖。
+- 布尔/整数类型规范化。
+
+### 对项目流程的影响
+
+Final Evidence 的长表策略现在和 recursion/checkpoint/doc quality 一样，属于标准 runtime 配置项，不再是代码内部常量。
+
+## 2026-05-18 15:23 CST 追加记录：删除 bootstrap prompt 配置
+
+### 为什么修改
+
+这次把 `bootstrap_observations` 整体删除后，`prompt_max_bootstrap_observations` 已经没有任何运行意义，继续保留只会制造“配置存在但逻辑已死”的假象。
+
+### 修改成了什么逻辑
+
+从 `LangGraphRuntimeConfig` 和 `load_app_config()` 中删除：
+
+```text
+prompt_max_bootstrap_observations
+```
+
+### 作用
+
+runtime 配置项和实际 prompt 链路重新对齐，不再保留已经失效的 bootstrap 数量开关。
+
+## 2026-05-18 15:27 CST 追加记录：删除失效的 planning/context-pack budget 配置
+
+### 为什么修改
+
+旧的 `task_snapshot/context_profile/context_summary` 截断逻辑已经删掉，`Task Context Pack` 也不再单独截断，继续保留：
+
+```text
+planning_context_char_budget
+context_pack_char_budget
+```
+
+只会让配置面和真实运行逻辑脱节。
+
+### 修改成了什么逻辑
+
+从 `LangGraphRuntimeConfig` 和 `load_app_config()` 中删除：
+
+```text
+planning_context_char_budget
+context_pack_char_budget
+```
+
+保留仍然真实生效的：
+
+```text
+execution_context_char_budget
+prompt_total_char_budget
+prompt_recent_step_count
+```
+
+### 作用
+
+配置项只保留当前还在控制 prompt 行为的预算字段，不再暴露已经失效的 planning/context-pack 局部截断开关。

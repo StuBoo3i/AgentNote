@@ -426,3 +426,49 @@ _evidence, _confidence, and _source_path columns.
 
 - referenced table 提取仍是轻量正则，不是完整 SQL parser。
 - Python provenance 只做文件路径和 evidence/confidence 字符串级识别。
+
+## 2026-05-18 16:13 CST 追加记录：将 ToolRegistry 收缩为默认注册入口
+
+### 涉及文件
+
+`/nfsdat/home/jwangslm/UniformDB/src/data_agent_baseline/tools/registry.py`
+
+### 为什么修改
+
+原来的 `registry.py` 同时承担：
+
+- ToolSpec / ToolRegistry 类型定义
+- SQL rewrite / provenance helper
+- 全部工具 handler
+- 全部工具描述
+- 默认注册表组装
+
+这导致模块边界非常差。任何一个工具域改动，都会继续堆到同一个文件里，`ToolRegistry` 也自然变成所有工具实现的耦合点。
+
+### 修改成了什么结构
+
+`registry.py` 现在只保留两类内容：
+
+- 从 `registry_core.py` re-export 公共类型
+- `create_default_tool_registry()` 默认组装逻辑
+
+默认注册顺序为：
+
+```text
+answer
+filesystem
+sqlite
+unified_db
+doc
+python
+```
+
+### 对项目流程的影响
+
+对 LangGraph runtime 没有行为变化。外部仍然通过：
+
+```python
+from data_agent_baseline.tools.registry import ToolRegistry, create_default_tool_registry
+```
+
+拿到同样的默认工具集合，只是实现不再堆在同一文件里。

@@ -678,3 +678,143 @@ ruff check src tests   -> All checks passed
 pytest -q              -> 10 passed
 ruff check src tests   -> All checks passed
 ```
+
+## 2026-05-17 17:16 CST 追加：lowest cost 反隐式聚合约束
+
+### 修改内容
+
+这次只加了一个新的答案契约字段，针对 `Which event has the lowest cost?` 这类极值题，防止 planner 把 row-level `cost` 误升级成 `SUM(cost) GROUP BY event`。
+
+新增逻辑位于 `infer_answer_contract()`：
+
+```python
+aggregation_policy = {
+    "policy": "disallow_implicit_group_aggregate",
+    "metric_source": "expense.cost",
+    "reason": "lowest-cost wording without total/sum/average/count/per/each should rank row-level metric values",
+}
+```
+
+只有当问题显式包含这些聚合词时才不触发：
+
+```text
+total
+sum
+average
+avg
+mean
+count
+number of
+how many
+group by
+per
+each
+```
+
+`build_validation_checks()` 也同步增加了一条约束，提示不要在未显式要求时引入 grouped aggregate。
+
+### 影响
+
+这不会改 unifiedDB，也不会改变 `source_map` 的结构，只是把“最低成本”这类题从默认聚合思路拉回到 row-level 排序思路。
+
+## 2026-05-17 23:10 CST 追加记录：保守的 list entity -> identifier 规则
+
+### 为什么修改
+
+当前不少 `list/detail/table` 题虽然 SQL 能查对，但 `expected_columns` 为空，导致 Final Evidence 只能停留在 candidate，不能形成高置信 projection。长表题一旦进入模型手工复制阶段，就容易出现漏行、增行或改写 cell。
+
+### 修改成了什么逻辑
+
+新增了一套保守规则，只在 schema 证据明确时补 `expected_columns`：
+
+- 问题是 `list/show/return/provide/identify/which/what are` 这类 detail 请求。
+- 不是 `count/sum/average/ratio/percentage` 或 `top 1/first/single`。
+- 没有显式要求多字段输出，例如 `with date and amount`、`including type`。
+- 能从 schema 中找到问题里最先提到的目标实体表。
+- 该表存在唯一高置信标识列：
+  - 唯一 `primary_key_candidates`；
+  - 或多候选中只有一个是 `id` / `{table}_id`。
+
+满足时写入：
+
+```text
+expected_columns = [{source=<table>.<identifier>, kind=answer, confidence=high, evidence="schema-backed entity identifier for list request"}]
+```
+
+并把 `row_grain` 设为：
+
+```text
+one value vector per matching <table>
+```
+
+### 边界
+
+- 如果目标表不明确，或主键候选不够唯一，不绑定 `expected_columns`，只写 warning。
+- 这条规则不依赖题号，不读 gold，也不从自然语言硬猜输出列。
+
+## 2026-05-18 15:23 CST 追加记录：Task Context Pack 中心化
+
+### 为什么修改
+
+之前 `Task Context Pack` 和 `task_snapshot / context_profile / context_summary` 并行存在，规划和执行 prompt 会同时看到多层重复上下文。模型既能看到原始摘要，也能看到解释层约束，容易出现 source_map 和原始 preview 互相打架。
+
+### 修改成了什么逻辑
+
+`build_task_context_pack()` 现在直接产出单一上下文对象，新增并固定以下顶层字段：
+
+- `task`
+- `context_inventory`
+- `source_summaries`
+- `data_profile`
+
+保留原有理解字段：
+
+- `question_intent`
+- `source_map`
+- `answer_contract`
+- `doc_schema_hypotheses`
+- `doc_extraction_requirements`
+- `unresolved_schema_questions`
+- `knowledge_facts`
+- `pack_metadata`
+
+同时删除：
+
+- `execution_plan`
+- 顶层 `validation_checks`
+- `build_execution_plan()`
+- `build_validation_checks()`
+
+### 作用
+
+现在 `Task Context Pack` 只负责任务理解、source mapping 和 answer contract，不再自己产出自然语言计划。`build_plan` 成为唯一高层计划生成入口。
+
+## 2026-05-18 16:32 CST 追加记录：移除本地 markdown/knowledge 处理，改为调用 DocSage
+
+### 涉及文件
+
+`/nfsdat/home/jwangslm/UniformDB/src/data_agent_baseline/agents/context_pack.py`
+
+### 为什么修改
+
+`context_pack.py` 原来自己负责：
+
+- 读取 `knowledge.md`
+- markdown 切块
+- 生成 `knowledge_facts`
+- 基于领域字段判断 `doc_extraction_requirements`
+
+这让 Task Context Pack 直接承担了非结构化文档处理职责，和 DocSage 冲突。
+
+### 修改内容
+
+- `extract_relevant_knowledge_facts()` 迁出到 `docsage/knowledge.py`
+- `_split_markdown_chunks()` 删除
+- `plan_doc_schema()` 改为从 `docsage` 导入
+- `doc_extraction_requirements` 改为通用规则：
+  - 显式 doc cue
+  - 问题 token 与文档文件名/标题重叠
+
+### 对系统行为的影响
+
+Task Context Pack 现在只消费 DocSage 的通用文档结果，不再自己读 markdown，也不再依赖领域字段存在与否。

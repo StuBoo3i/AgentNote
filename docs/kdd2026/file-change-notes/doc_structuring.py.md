@@ -402,3 +402,35 @@ build_doc_tables()
 
 - 质量信息是表级摘要，不判断每一行是否足以支撑最终答案。
 - `_confidence` 仍来自当前规则抽取器，不是 LLM 校验置信度。
+
+## 2026-05-18 16:32 CST 追加记录：删除旧的领域规则文档抽取实现
+
+### 涉及文件
+
+`/nfsdat/home/jwangslm/UniformDB/src/data_agent_baseline/tools/doc_structuring.py`
+
+### 为什么删除
+
+该文件包含大量硬编码领域抽取规则，例如：
+
+- legalities
+- budget
+- superhero
+- race
+- patient
+- laboratory
+
+这类逻辑与“通用非结构化文档模块”目标冲突，也让 DocSage 变成案例驱动的规则集合。
+
+### 删除后的替代
+
+原文件已删除，职责迁移到新的 `data_agent_baseline.docsage` 包：
+
+- 通用 schema
+- 通用 chunk evidence 存储
+- `knowledge.md` 事实抽取
+- unifiedDB doc 导入
+
+### 对系统行为的影响
+
+项目不再尝试把文档直接解析成领域实体表，只保留通用 chunk/evidence 查询能力。

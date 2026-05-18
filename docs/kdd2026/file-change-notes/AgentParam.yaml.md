@@ -245,3 +245,30 @@ final_evidence_min_confidence: high
 
 - 这次修改只收紧默认值，不删除 Final Evidence 功能。
 - 如果后续需要做定向回归实验，仍可通过 `configs/*.yaml` 显式重新打开这两个开关。
+
+## 2026-05-17 23:10 CST 追加记录：Final Evidence 长表可信落地配置
+
+### 为什么修改
+
+这次代码新增了两类长表保护能力：
+
+- 高置信 `expected_columns` 下，直接从 Final Evidence projection 物化最终长表答案。
+- 没有高置信 projection 时，对长表 answer 和最近完整结构化 evidence 做 mismatch 阻断。
+
+这些行为需要通过集中参数暴露，避免写死在代码里，也便于后续做 ablation。
+
+### 新增了哪些参数
+
+在 `langgraph` 段新增：
+
+```yaml
+final_evidence_materialize_long_tables: true
+final_evidence_long_table_min_rows: 20
+final_evidence_block_mismatched_long_table: true
+```
+
+### 运行逻辑
+
+- `materialize_long_tables=true`：当存在高置信 `expected_columns` 投影且 evidence 是完整未截断结构化长表时，最终答案直接来自 evidence projection，而不是模型手工复制。
+- `long_table_min_rows=20`：只有达到长表阈值才触发该机制。
+- `block_mismatched_long_table=true`：没有高置信 projection 时，若长表 answer 与最近完整 evidence 行数或 multiset 明显不一致，则 validation 失败，不写错误 CSV。

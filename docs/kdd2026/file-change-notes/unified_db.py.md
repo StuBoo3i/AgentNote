@@ -581,3 +581,23 @@ planner 和 validation 可以区分：
 - 普通巨大 JSON array 第一版不做 streaming array 解析，避免引入 `ijson` 强依赖。
 - low quality 判定是表级门控，不能替代最终答案逐行证据核查。
 - `import_low_quality_doc_tables=true` 时仍允许低质量 doc table 进入 unifiedDB，但会携带 quality metadata。
+
+## 2026-05-18 16:32 CST 追加记录：移除 unifiedDB 内部的 DocSage 细节实现
+
+### 涉及文件
+
+`/nfsdat/home/jwangslm/UniformDB/src/data_agent_baseline/tools/unified_db.py`
+
+### 修改内容
+
+- 删除本地 `_copy_doc_extracted_tables()`
+- 删除本地 `_doc_table_quality()`
+- 改为调用 `docsage.copy_doc_extracted_tables()`
+
+### 为什么修改
+
+这一步把 unifiedDB 从“了解 DocSage 内部如何构表、如何评估质量”的状态，收缩成“只接收 DocSage 导出的表和元数据”。
+
+### 对系统行为的影响
+
+unifiedDB 仍然会导入 doc-extracted 表，但导入控制权已经回到 DocSage，模块边界更清晰。
